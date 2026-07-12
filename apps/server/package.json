@@ -1,0 +1,23 @@
+{
+  "name": "server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "migrate": "dotenv -e ../../.env -- node-pg-migrate up -j sql",
+    "migrate:down": "dotenv -e ../../.env -- node-pg-migrate down -j sql",
+    "migrate:new": "node-pg-migrate create -j sql",
+    "seed": "dotenv -e ../../.env -- tsx src/seed.ts"
+  },
+  "dependencies": {
+    "argon2": "^0.41.1",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "dotenv-cli": "^8.0.0",
+    "node-pg-migrate": "^7.9.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
