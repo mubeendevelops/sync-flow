@@ -1,0 +1,27 @@
+{
+  "name": "@sync-flow/crdt",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Framework-free RGA CRDT — the shared core, imported by both server and web.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "fast-check": "^3.23.2",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.10"
+  }
+}
