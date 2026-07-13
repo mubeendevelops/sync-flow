@@ -5,6 +5,7 @@ import { createPgPool } from "@/db/pool.js";
 import { createRedisClient } from "@/cache/client.js";
 import { createApp } from "@/app.js";
 import { createSocketServer } from "@/sockets/io.js";
+import { parseTtlToSeconds } from "@/auth/tokens.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -20,6 +21,13 @@ async function main(): Promise<void> {
     db: pool,
     cache: redis,
     corsOrigin: config.CORS_ORIGIN,
+    auth: {
+      jwtAccessSecret: config.JWT_ACCESS_SECRET,
+      jwtRefreshSecret: config.JWT_REFRESH_SECRET,
+      jwtAccessTtlSeconds: parseTtlToSeconds(config.JWT_ACCESS_TTL),
+      jwtRefreshTtlSeconds: parseTtlToSeconds(config.JWT_REFRESH_TTL),
+      cookieDomain: config.COOKIE_DOMAIN,
+    },
   });
 
   const httpServer = createServer(app);

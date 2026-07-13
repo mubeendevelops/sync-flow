@@ -48,6 +48,10 @@ export class AppError extends Error {
     return new AppError({ status: 409, title: "Conflict", detail });
   }
 
+  static tooManyRequests(detail?: string): AppError {
+    return new AppError({ status: 429, title: "Too Many Requests", detail });
+  }
+
   static internal(detail?: string, cause?: unknown): AppError {
     return new AppError({ status: 500, title: "Internal Server Error", detail, cause });
   }

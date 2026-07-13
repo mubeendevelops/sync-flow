@@ -1,12 +1,14 @@
+import crypto from "node:crypto";
 import argon2 from "argon2";
 import pg from "pg";
+import { assignPresenceColor } from "./auth/presence-color.js";
 
 const DEV_PASSWORD = "devPassword123!";
 
 const USERS = [
-  { email: "alice@example.com", displayName: "Alice Anderson" },
-  { email: "bob@example.com", displayName: "Bob Brown" },
-  { email: "carol@example.com", displayName: "Carol Chen" },
+  { username: "alice", email: "alice@example.com", displayName: "Alice Anderson" },
+  { username: "bob", email: "bob@example.com", displayName: "Bob Brown" },
+  { username: "carol", email: "carol@example.com", displayName: "Carol Chen" },
 ] as const;
 
 async function main() {
@@ -26,11 +28,13 @@ async function main() {
 
     const userIds: Record<string, string> = {};
     for (const user of USERS) {
+      const id = crypto.randomUUID();
+      const presenceColor = assignPresenceColor(id);
       const { rows } = await client.query<{ id: string }>(
-        `INSERT INTO users (email, password_hash, display_name)
-         VALUES ($1, $2, $3)
+        `INSERT INTO users (id, username, email, password_hash, display_name, presence_color)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id`,
-        [user.email, passwordHash, user.displayName],
+        [id, user.username, user.email, passwordHash, user.displayName, presenceColor],
       );
       userIds[user.email] = rows[0].id;
     }

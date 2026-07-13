@@ -20,6 +20,15 @@ function buildTestApp(overrides: { db?: DbClient; cache?: CacheClient } = {}) {
     db: overrides.db ?? fakeDb,
     cache: overrides.cache ?? fakeCache,
     corsOrigin: "http://localhost:3000",
+    auth: {
+      jwtAccessSecret: "test-access-secret-0123456789",
+      jwtRefreshSecret: "test-refresh-secret-0123456789",
+      jwtAccessTtlSeconds: 900,
+      jwtRefreshTtlSeconds: 604800,
+      cookieDomain: "localhost",
+      secureCookies: false,
+      authRateLimit: { windowMs: 60_000, max: 1000 },
+    },
   });
 }
 
