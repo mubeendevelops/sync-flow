@@ -20,9 +20,7 @@ async function main() {
     await client.query("DELETE FROM documents WHERE title = ANY($1)", [
       ["Product Roadmap Q3", "Engineering Onboarding Guide"],
     ]);
-    await client.query("DELETE FROM users WHERE email = ANY($1)", [
-      USERS.map((u) => u.email),
-    ]);
+    await client.query("DELETE FROM users WHERE email = ANY($1)", [USERS.map((u) => u.email)]);
 
     const passwordHash = await argon2.hash(DEV_PASSWORD);
 
