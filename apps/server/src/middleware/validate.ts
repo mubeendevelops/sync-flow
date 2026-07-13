@@ -25,7 +25,20 @@ export function validate(schemas: ValidationSchemas): RequestHandler {
         return;
       }
 
-      Object.assign(req[key], result.data);
+      if (key === "query") {
+        // Express 5's req.query is a getter that re-parses the raw query string from scratch on
+        // every access and has no setter, so Object.assign onto it is silently discarded and
+        // any coercion/defaults from the schema never actually reach the handler. Overriding the
+        // property itself (still configurable) makes the parsed value stick for this request.
+        Object.defineProperty(req, "query", {
+          value: result.data,
+          writable: true,
+          configurable: true,
+          enumerable: true,
+        });
+      } else {
+        Object.assign(req[key], result.data);
+      }
     }
     next();
   };

@@ -7,6 +7,7 @@ import type { DbClient } from "./db/types.js";
 import type { CacheClient } from "./cache/types.js";
 import { createHealthRouter } from "./routes/health.js";
 import { createAuthRouter, type AuthRouterDeps } from "./routes/auth.js";
+import { createDocumentsRouter } from "./routes/documents.js";
 import { notFoundHandler } from "./middleware/not-found.js";
 import { errorHandler } from "./middleware/error-handler.js";
 
@@ -30,6 +31,10 @@ export function createApp(deps: AppDeps): Express {
 
   app.use(createHealthRouter({ db: deps.db, cache: deps.cache }));
   app.use("/api/v1/auth", createAuthRouter({ db: deps.db, ...deps.auth }));
+  app.use(
+    "/api/v1/documents",
+    createDocumentsRouter({ db: deps.db, jwtAccessSecret: deps.auth.jwtAccessSecret }),
+  );
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -35,7 +35,7 @@ async function ensureDatabaseExists(): Promise<void> {
   }
 }
 
-function runMigrations(): void {
+function runMigrationsOnce(): void {
   execFileSync("node_modules/.bin/node-pg-migrate", ["up", "-j", "sql"], {
     cwd: SERVER_ROOT,
     env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
@@ -43,10 +43,31 @@ function runMigrations(): void {
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Vitest runs each test file in its own worker, and every file calls setupTestDb() — node-pg-
+// migrate takes a Postgres advisory lock while migrating, so concurrent workers race for it and
+// the loser errors immediately instead of waiting. Once the winner finishes there's nothing left
+// to migrate, so a short retry loop is enough; no need for a shared globalSetup step.
+async function runMigrations(): Promise<void> {
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      runMigrationsOnce();
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) throw err;
+      await sleep(300 * attempt);
+    }
+  }
+}
+
 /** Ensures the test database exists and is migrated, and returns a pool connected to it. */
 export async function setupTestDb(): Promise<pg.Pool> {
   await ensureDatabaseExists();
-  runMigrations();
+  await runMigrations();
   return new pg.Pool({ connectionString: TEST_DATABASE_URL });
 }
 
