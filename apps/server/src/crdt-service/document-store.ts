@@ -68,6 +68,16 @@ export class DocumentStore {
     });
   }
 
+  /**
+   * Highest PERSISTED op version folded into this document — the watermark a client
+   * resumes from. Advances only via `onPersisted`, so it's a monotonic lower bound of
+   * what's durable (ops applied to `doc` but not yet flushed aren't counted). A client
+   * that resyncs from a slightly stale watermark just over-replays, which is a no-op.
+   */
+  get currentSeq(): number {
+    return this.latestSeq;
+  }
+
   static async load(deps: DocumentStoreDeps): Promise<DocumentStore> {
     const { doc, seq } = await hydrateDocument(
       { db: deps.db, cache: deps.cache },

@@ -5,6 +5,7 @@ import { createPgPool } from "@/db/pool.js";
 import { createRedisClient } from "@/cache/client.js";
 import { createApp } from "@/app.js";
 import { createSocketServer } from "@/sockets/io.js";
+import { createRedisAdapter } from "@/sockets/adapter.js";
 import { parseTtlToSeconds } from "@/auth/tokens.js";
 
 async function main(): Promise<void> {
@@ -31,7 +32,15 @@ async function main(): Promise<void> {
   });
 
   const httpServer = createServer(app);
-  const io = createSocketServer(httpServer, config.CORS_ORIGIN);
+  const { adapter, pub, sub } = await createRedisAdapter(redis);
+  const { io, manager } = createSocketServer(httpServer, {
+    corsOrigin: config.CORS_ORIGIN,
+    jwtAccessSecret: config.JWT_ACCESS_SECRET,
+    db: pool,
+    cache: redis,
+    logger,
+    adapter,
+  });
 
   httpServer.listen(config.PORT, () => {
     logger.info({ port: config.PORT }, "server listening");
@@ -49,10 +58,13 @@ async function main(): Promise<void> {
       await new Promise<void>((resolve, reject) => {
         io.close((err) => (err ? reject(err) : resolve()));
       });
+      // Drain open doc stores (flush buffered ops + final snapshots) before pg closes.
+      await manager.closeAll();
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });
       await pool.end();
+      await Promise.all([pub.quit(), sub.quit()]);
       await redis.quit();
 
       logger.info("shutdown complete");

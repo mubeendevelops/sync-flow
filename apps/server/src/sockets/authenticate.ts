@@ -1,4 +1,5 @@
 import { parseCookie } from "cookie";
+import jwt from "jsonwebtoken";
 import type { Socket } from "socket.io";
 import { verifyAccessToken } from "../auth/tokens.js";
 import { ACCESS_TOKEN_COOKIE } from "../auth/cookies.js";
@@ -25,6 +26,11 @@ export function authenticateSocket(deps: AuthenticateSocketDeps) {
     try {
       const payload = verifyAccessToken(token, deps.jwtAccessSecret);
       socket.data.user = { id: payload.sub };
+      // Stash the token's expiry so the connection can emit `auth:expired` mid-session.
+      const decoded = jwt.decode(token);
+      if (decoded && typeof decoded === "object" && typeof decoded.exp === "number") {
+        socket.data.tokenExp = decoded.exp;
+      }
       next();
     } catch {
       next(new Error("Invalid or expired access token"));
