@@ -1,4 +1,5 @@
 import type { DbClient } from "../db/types.js";
+import { SNAPSHOT_VERSION, type DocumentSnapshot } from "@sync-flow/crdt";
 
 export interface DocumentRecord {
   id: string;
@@ -12,11 +13,12 @@ export interface DocumentRecord {
 
 const DOCUMENT_COLUMNS = "id, title, owner_id, is_public, deleted_at, created_at, updated_at";
 
-// Placeholder empty CRDT state — packages/crdt (Phase 1, not yet built) owns the real snapshot
-// shape (chars/tombstones/clocks per CLAUDE.md). An empty document has no chars at all, so this
-// is the one shape that can't be wrong regardless of what the eventual format looks like; the
-// CRDT work will replace this with a real `toSnapshot(emptyState)` call.
-const EMPTY_CRDT_STATE = JSON.stringify({ chars: [] });
+// A real, empty `@sync-flow/crdt` DocumentSnapshot for a brand-new document's version-0 row:
+// no chars, Lamport clock 0. This is the shape `RGADocument.fromSnapshot` expects, replacing
+// the earlier `{ chars: [] }` placeholder now that packages/crdt has landed (hydrate.ts also
+// tolerates that legacy shape by treating it as empty).
+const EMPTY_CRDT_STATE: DocumentSnapshot = { v: SNAPSHOT_VERSION, clock: 0, chars: [] };
+const EMPTY_CRDT_STATE_JSON = JSON.stringify(EMPTY_CRDT_STATE);
 
 export async function findDocumentById(db: DbClient, id: string): Promise<DocumentRecord | null> {
   const { rows } = await db.query<DocumentRecord>(
@@ -73,7 +75,7 @@ export async function createDocumentWithInitialSnapshot(
        SELECT id, 0, $3::jsonb, '' FROM new_document
      )
      SELECT * FROM new_document`,
-    [input.title, input.ownerId, EMPTY_CRDT_STATE],
+    [input.title, input.ownerId, EMPTY_CRDT_STATE_JSON],
   );
   return rows[0];
 }
