@@ -14,6 +14,30 @@ export interface StoredSnapshot {
   readonly state: DocumentSnapshot;
 }
 
+/**
+ * The `seq` of the SECOND-most-recent snapshot — the "replay floor" for `sync`.
+ *
+ * Operation retention (PLAN 2.11) keeps ops back through the 2 most recent snapshots,
+ * so every op with `seq > this` is guaranteed still retained and can be served as a
+ * catch-up tail. A client at or above this version can be caught up with ops; a client
+ * BELOW it may be missing pruned ops and must be sent a full snapshot instead.
+ *
+ * Returns 0 when fewer than 2 snapshots exist — nothing has been pruned yet, so any
+ * version is replayable from the op log. (Every document has a version-0 snapshot from
+ * creation, so "fewer than 2" means "no post-creation snapshot has fired yet".) Basing
+ * the floor on the snapshot seq — not `MIN(op.seq)` — is deliberate: `seq` is a GLOBAL
+ * BIGSERIAL with per-document gaps, so a document's first op can have `seq > 1` with no
+ * pruning involved, and a `MIN(op.seq)` floor would wrongly strand version-0 clients.
+ */
+export async function getReplayFloor(db: DbClient, documentId: string): Promise<number> {
+  const { rows } = await db.query<{ seq: string }>(
+    `SELECT seq FROM document_snapshots
+     WHERE document_id = $1 ORDER BY seq DESC OFFSET 1 LIMIT 1`,
+    [documentId],
+  );
+  return rows[0] ? Number(rows[0].seq) : 0;
+}
+
 /** The most recent snapshot for a document, or null if none exists yet. */
 export async function getLatestSnapshot(
   db: DbClient,

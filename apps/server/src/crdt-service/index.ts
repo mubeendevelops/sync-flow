@@ -18,7 +18,12 @@ export {
   type ReplayOp,
 } from "./op-log.repo.js";
 
-export { getLatestSnapshot, writeSnapshot, type StoredSnapshot } from "./snapshot.repo.js";
+export {
+  getLatestSnapshot,
+  getReplayFloor,
+  writeSnapshot,
+  type StoredSnapshot,
+} from "./snapshot.repo.js";
 
 export { OpWriter, type OpWriterOptions, type PersistFn } from "./op-writer.js";
 

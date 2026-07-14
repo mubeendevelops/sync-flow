@@ -31,6 +31,12 @@ export interface CursorPayload {
 }
 
 export interface SyncPayload {
+  /**
+   * The client's `last_known_version` — the highest server-assigned `seq` it has
+   * durably observed (via an edit ack, an `operation` broadcast, or a prior
+   * join/sync). The server catches the client up from here. Named `since` on the
+   * wire (this is a "give me everything since X" request); it IS last_known_version.
+   */
   readonly since: number;
 }
 
@@ -47,9 +53,24 @@ export interface EditResult {
   readonly count: number;
 }
 
+/**
+ * Server's answer to a `sync`. `seq` is always the server's current durable
+ * watermark, so the client can drive its "Reconnecting…/all changes saved" indicator
+ * off it regardless of mode.
+ *   - `ops`      — apply this catch-up tail, then advance to `seq`.
+ *   - `snapshot` — the client is below the replay floor or too far behind: rebuild
+ *                  the base from `snapshot`, then re-apply any still-unconfirmed local
+ *                  ops on top (idempotent) and push them via `edit`.
+ *   - `server_behind` — the client's `last_known_version` is AHEAD of the server
+ *                  (`since > seq`): the server lost ops it can't reproduce. The client
+ *                  keeps its state and re-pushes its local ops via `edit`; CRDT
+ *                  idempotency restores what was lost and no-ops the rest. See the
+ *                  handler + Decision Log for why this is rare-but-handled.
+ */
 export type SyncResult =
   | { readonly mode: "ops"; readonly ops: Op[]; readonly seq: number }
-  | { readonly mode: "snapshot"; readonly snapshot: DocumentSnapshot; readonly seq: number };
+  | { readonly mode: "snapshot"; readonly snapshot: DocumentSnapshot; readonly seq: number }
+  | { readonly mode: "server_behind"; readonly seq: number };
 
 export interface SocketErrorPayload {
   /** HTTP-style status the client can branch on (401/403/404/400/429/500). */

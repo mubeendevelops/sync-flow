@@ -19,6 +19,7 @@ import { AppError } from "../errors/app-error.js";
 import { assertCanAccess } from "../documents/permissions.js";
 import {
   getOperationsAfter,
+  getReplayFloor,
   type DocumentStore,
   type DocumentStoreLogger,
 } from "../crdt-service/index.js";
@@ -66,6 +67,18 @@ export interface DocHandlerDeps {
   readonly peerRelay?: PeerOpRelay;
 }
 
+/**
+ * "Too far behind" — the gap (in ops) above which `sync` sends a full snapshot instead
+ * of the op tail. 500 = 5× the 100-op snapshot cadence (PLAN: snapshot every 100 ops).
+ *
+ * Rationale: a client within 500 ops of HEAD missed at most ~5 snapshot windows, so the
+ * op tail is small, bounded, and trivial for the CRDT to replay. Beyond that, two costs
+ * grow without a clean bound — the unpaginated `getOperationsAfter` read and the JSON op
+ * payload on the wire — while a single snapshot is bounded by the CURRENT doc size
+ * (visible chars + un-GC'd tombstones), which is the more predictable transfer. This is a
+ * pure bandwidth/latency tradeoff, never a correctness one: both modes converge, so the
+ * exact number is tunable (`syncThreshold` dep) without touching the protocol.
+ */
 const DEFAULT_SYNC_THRESHOLD = 500;
 const MAX_CURSOR_ID_LEN = 64;
 
@@ -213,6 +226,14 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
     }
   }
 
+  /**
+   * Catch a reconnected/behind client up (the DOWNLOAD half of resync). `since` is the
+   * client's `last_known_version`. The UPLOAD half — offline local ops the client made
+   * while disconnected — comes back up the normal `edit` path (validated, authorized,
+   * persisted, rebroadcast), so a full reconnect is: `sync` down, then `edit` up. Order
+   * doesn't matter for convergence (CRDT), but down-then-up keeps the client's own ops
+   * layered on top of what it missed.
+   */
   async function handleSync(payload: SyncPayload, ack: Ack<SyncResult>): Promise<void> {
     try {
       const documentId = socket.data.documentId;
@@ -220,23 +241,43 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
 
       const { since } = syncPayloadSchema.parse(payload);
       const currentSeq = store.currentSeq;
-      const gap = currentSeq - since;
 
-      if (gap <= 0) {
+      // (1) Client is AHEAD of the server: its last_known_version exceeds our durable
+      //     watermark, so the server lost ops it can't reproduce (see Decision Log for
+      //     why this is rare given optimistic acks carry the PERSISTED watermark, and
+      //     what still triggers it — e.g. a Postgres PITR/restore rollback). We have no
+      //     tail/snapshot worth sending (we're behind); tell the client to re-push its
+      //     local ops via `edit`. Idempotent re-integration restores what we lost and
+      //     no-ops the rest.
+      if (since > currentSeq) {
+        ack({ ok: true, data: { mode: "server_behind", seq: currentSeq } });
+        return;
+      }
+
+      // (2) Already current.
+      const gap = currentSeq - since;
+      if (gap === 0) {
         ack({ ok: true, data: { mode: "ops", ops: [], seq: currentSeq } });
         return;
       }
-      if (gap <= syncThreshold) {
-        const tail = await getOperationsAfter(db, documentId, since);
-        const ops: Op[] = tail.map((r) => r.op);
-        ack({ ok: true, data: { mode: "ops", ops, seq: currentSeq } });
+
+      // (3) Below the replay floor (ops the client needs may have been pruned by
+      //     retention) OR too far behind by size — a full snapshot is the complete,
+      //     bounded answer. The replay-floor check is what makes "its version is older
+      //     than our oldest retained op" correct rather than best-effort.
+      const replayFloor = await getReplayFloor(db, documentId);
+      if (since < replayFloor || gap > syncThreshold) {
+        ack({
+          ok: true,
+          data: { mode: "snapshot", snapshot: store.doc.toSnapshot(), seq: currentSeq },
+        });
         return;
       }
-      // Too far behind: a fresh snapshot is cheaper than the op tail.
-      ack({
-        ok: true,
-        data: { mode: "snapshot", snapshot: store.doc.toSnapshot(), seq: currentSeq },
-      });
+
+      // (4) Serve the op tail. All ops after `since` are guaranteed retained here.
+      const tail = await getOperationsAfter(db, documentId, since);
+      const ops: Op[] = tail.map((r) => r.op);
+      ack({ ok: true, data: { mode: "ops", ops, seq: currentSeq } });
     } catch (err) {
       respondError(socket, ack, err, logger);
     }
