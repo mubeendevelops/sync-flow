@@ -13,6 +13,7 @@ export type { HydrateDeps, HydratedDocument } from "./hydrate.js";
 export {
   appendOperations,
   getOperationsAfter,
+  getOperationsInRange,
   type PersistedOp,
   type PendingOp,
   type ReplayOp,
@@ -20,10 +21,21 @@ export {
 
 export {
   getLatestSnapshot,
+  getSnapshotAtOrBefore,
   getReplayFloor,
   writeSnapshot,
   type StoredSnapshot,
+  type SnapshotMeta,
 } from "./snapshot.repo.js";
+
+export {
+  reconstructVersion,
+  applyRestore,
+  performRestore,
+  type RestoreBroadcaster,
+  type RestoreResult,
+  type ReconstructedVersion,
+} from "./restore.js";
 
 export { OpWriter, type OpWriterOptions, type PersistFn } from "./op-writer.js";
 

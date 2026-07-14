@@ -15,6 +15,19 @@ export interface StoredSnapshot {
 }
 
 /**
+ * Optional labelling for a snapshot (version-history checkpoints). Omitted entirely
+ * for the automatic snapshot path, which stays a plain `kind='auto'` row.
+ */
+export interface SnapshotMeta {
+  /** 'auto' (policy), 'restore_point' (pre-restore), or 'post_restore'. */
+  readonly kind: string;
+  /** Human-readable checkpoint label, or null. */
+  readonly label?: string | null;
+  /** User who triggered a manual/restore snapshot, or null for automatic ones. */
+  readonly createdBy?: string | null;
+}
+
+/**
  * The `seq` of the SECOND-most-recent snapshot — the "replay floor" for `sync`.
  *
  * Operation retention (PLAN 2.11) keeps ops back through the 2 most recent snapshots,
@@ -53,11 +66,37 @@ export async function getLatestSnapshot(
 }
 
 /**
+ * The newest snapshot with `seq <= version` — the base to reconstruct that version
+ * from (rebuild `fromSnapshot(state)` then replay ops in `(seq, version]`). Every
+ * document has a version-0 creation snapshot, so this returns null only for a
+ * missing document or a negative version.
+ */
+export async function getSnapshotAtOrBefore(
+  db: DbClient,
+  documentId: string,
+  version: number,
+): Promise<StoredSnapshot | null> {
+  const { rows } = await db.query<{ seq: string; state: DocumentSnapshot }>(
+    `SELECT seq, state FROM document_snapshots
+     WHERE document_id = $1 AND seq <= $2 ORDER BY seq DESC LIMIT 1`,
+    [documentId, version],
+  );
+  const row = rows[0];
+  return row ? { seq: Number(row.seq), state: row.state } : null;
+}
+
+/**
  * Write a snapshot at watermark `seq`. `plainText` is the denormalized visible
  * text (for previews) and is kept in the same row as `state` so it can't drift.
- * `ON CONFLICT DO NOTHING` on (document_id, seq) makes a re-snapshot at the same
- * watermark a no-op rather than a unique-violation, which keeps snapshotting
- * idempotent under retries.
+ *
+ * Conflict handling on (document_id, seq) depends on `meta`:
+ *   - No `meta` (the automatic path): `DO NOTHING`, so a re-snapshot at the same
+ *     watermark is an idempotent no-op under retries.
+ *   - With `meta` (a restore checkpoint): `DO UPDATE` the metadata columns only, so
+ *     labelling a checkpoint that happens to fall on a seq an auto-snapshot already
+ *     captured *upgrades* that row (stamps kind/label/created_by) instead of being
+ *     silently dropped. `state`/`plain_text` are left as-is — the same seq captures
+ *     the same state either way, so there's nothing to overwrite.
  */
 export async function writeSnapshot(
   db: DbClient,
@@ -65,11 +104,32 @@ export async function writeSnapshot(
   seq: number,
   state: DocumentSnapshot,
   plainText: string,
+  meta?: SnapshotMeta,
 ): Promise<void> {
+  if (!meta) {
+    await db.query(
+      `INSERT INTO document_snapshots (document_id, seq, state, plain_text)
+       VALUES ($1, $2, $3::jsonb, $4)
+       ON CONFLICT (document_id, seq) DO NOTHING`,
+      [documentId, seq, JSON.stringify(state), plainText],
+    );
+    return;
+  }
   await db.query(
-    `INSERT INTO document_snapshots (document_id, seq, state, plain_text)
-     VALUES ($1, $2, $3::jsonb, $4)
-     ON CONFLICT (document_id, seq) DO NOTHING`,
-    [documentId, seq, JSON.stringify(state), plainText],
+    `INSERT INTO document_snapshots (document_id, seq, state, plain_text, kind, label, created_by)
+     VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
+     ON CONFLICT (document_id, seq) DO UPDATE
+       SET kind = EXCLUDED.kind,
+           label = COALESCE(EXCLUDED.label, document_snapshots.label),
+           created_by = COALESCE(EXCLUDED.created_by, document_snapshots.created_by)`,
+    [
+      documentId,
+      seq,
+      JSON.stringify(state),
+      plainText,
+      meta.kind,
+      meta.label ?? null,
+      meta.createdBy ?? null,
+    ],
   );
 }

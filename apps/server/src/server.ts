@@ -3,8 +3,9 @@ import { loadConfig } from "@/config/env.js";
 import { createLogger } from "@/logger/index.js";
 import { createPgPool } from "@/db/pool.js";
 import { createRedisClient } from "@/cache/client.js";
+import type { Op } from "@sync-flow/crdt";
 import { createApp } from "@/app.js";
-import { createSocketServer } from "@/sockets/io.js";
+import { createSocketServer, type DocIOServer } from "@/sockets/io.js";
 import { createRedisAdapter } from "@/sockets/adapter.js";
 import { createPeerOpRelay } from "@/sockets/peer-relay.js";
 import { DocumentRoomManager } from "@/sockets/room-manager.js";
@@ -19,6 +20,28 @@ async function main(): Promise<void> {
   redis.on("error", (err) => logger.error({ err }, "redis client error"));
   await redis.connect();
 
+  const { adapter, pub, sub } = await createRedisAdapter(redis);
+  // Built up-front (rather than left to createSocketServer's internal default) so both
+  // the peer-apply relay and the REST restore endpoint can be wired to the same manager
+  // before any connection lands.
+  const manager = new DocumentRoomManager({ db: pool, cache: redis, logger });
+  const peerRelay = await createPeerOpRelay(redis, manager, logger);
+
+  // The restore broadcaster fans a restore's ops out exactly like a socket edit: to
+  // connected clients on every instance (`io.to(...).emit`) and into peer instances'
+  // materialized copies (`peerRelay.publish`). `io` doesn't exist until the socket
+  // server is created below (it needs the httpServer that wraps `app`), so the
+  // broadcaster closes over a late-bound reference.
+  let ioRef: DocIOServer | null = null;
+  const restoreBroadcaster = {
+    broadcast(documentId: string, ops: Op[], seq: number) {
+      ioRef?.to(documentId).emit("operation", { ops, seq });
+    },
+    publishPeers(documentId: string, ops: Op[]) {
+      peerRelay.publish(documentId, ops);
+    },
+  };
+
   const app = createApp({
     logger,
     db: pool,
@@ -31,14 +54,10 @@ async function main(): Promise<void> {
       jwtRefreshTtlSeconds: parseTtlToSeconds(config.JWT_REFRESH_TTL),
       cookieDomain: config.COOKIE_DOMAIN,
     },
+    restore: { manager, broadcaster: restoreBroadcaster },
   });
 
   const httpServer = createServer(app);
-  const { adapter, pub, sub } = await createRedisAdapter(redis);
-  // Built up-front (rather than left to createSocketServer's internal default) so the
-  // peer-apply relay below can be wired to the same manager before any connection lands.
-  const manager = new DocumentRoomManager({ db: pool, cache: redis, logger });
-  const peerRelay = await createPeerOpRelay(redis, manager, logger);
   const { io } = createSocketServer(httpServer, {
     corsOrigin: config.CORS_ORIGIN,
     jwtAccessSecret: config.JWT_ACCESS_SECRET,
@@ -49,6 +68,7 @@ async function main(): Promise<void> {
     manager,
     peerRelay,
   });
+  ioRef = io;
 
   httpServer.listen(config.PORT, () => {
     logger.info({ port: config.PORT }, "server listening");

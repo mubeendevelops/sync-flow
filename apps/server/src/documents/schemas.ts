@@ -31,3 +31,15 @@ export const listOperationsQuerySchema = z.object({
   cursor: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
+
+/** `:version` is a server-assigned op/snapshot seq (see document_operations.seq). */
+export const versionParamsSchema = z.object({
+  id: z.uuid(),
+  version: z.coerce.number().int().min(0),
+});
+
+export const listVersionsQuerySchema = z.object({
+  /** Keyset cursor: return versions with seq < cursor (newest first). Omit for page 1. */
+  cursor: z.coerce.number().int().min(0).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});

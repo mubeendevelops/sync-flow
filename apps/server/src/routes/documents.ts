@@ -12,7 +12,16 @@ import {
   patchDocumentBodySchema,
   inviteBodySchema,
   listOperationsQuerySchema,
+  versionParamsSchema,
+  listVersionsQuerySchema,
 } from "../documents/schemas.js";
+import { listVersions, type VersionListItem } from "../documents/versions.repo.js";
+import {
+  reconstructVersion,
+  performRestore,
+  type RestoreBroadcaster,
+} from "../crdt-service/index.js";
+import type { DocumentStore } from "../crdt-service/index.js";
 import {
   listAccessibleDocuments,
   createDocumentWithInitialSnapshot,
@@ -29,9 +38,41 @@ import {
 } from "../documents/documents.repo.js";
 import { findUserByEmail, findUserById, toPublicUser } from "../auth/users.repo.js";
 
+/**
+ * Live-document surface the restore endpoint needs: acquire/release the shared
+ * `DocumentStore` (so connected clients receive the restore ops) and a broadcaster to
+ * fan the ops out. Optional — the versions LIST/GET endpoints work without it; only
+ * POST /restore requires it, and it's always wired in the real server (see server.ts).
+ */
+export interface DocumentsRestoreDeps {
+  readonly manager: {
+    acquire(documentId: string): Promise<DocumentStore>;
+    release(documentId: string): void;
+  };
+  readonly broadcaster: RestoreBroadcaster;
+}
+
 export interface DocumentsRouterDeps {
   db: DbClient;
   jwtAccessSecret: string;
+  /** Realtime wiring for POST /restore; omit to disable restore (list/get still work). */
+  restore?: DocumentsRestoreDeps;
+}
+
+const VERSION_PREVIEW_LENGTH = 140;
+
+function toVersionDto(v: VersionListItem) {
+  return {
+    version: v.version,
+    createdAt: v.createdAt,
+    kind: v.kind,
+    label: v.label,
+    createdBy: v.createdBy,
+    preview: v.preview,
+    textLength: v.textLength,
+    truncated: v.textLength > v.preview.length,
+    contributors: v.contributors,
+  };
 }
 
 function toDocumentDto(doc: DocumentRecord) {
@@ -227,6 +268,82 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
         });
         const nextCursor = hasMore ? String(operations[operations.length - 1].seq) : null;
         res.status(200).json({ operations: operations.map(toOperationDto), nextCursor });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ---- version history ----------------------------------------------------
+
+  // Paginated snapshot list = the version history (timestamp, contributors, preview).
+  router.get(
+    "/:id/versions",
+    validate({ params: documentIdParamsSchema, query: listVersionsQuerySchema }),
+    async (req, res, next) => {
+      try {
+        const { id } = req.params as unknown as { id: string };
+        await assertCanAccess(deps.db, req.user!.id, id, "viewer");
+        const { cursor, limit } = req.query as unknown as { cursor?: number; limit: number };
+        const { versions, hasMore } = await listVersions(deps.db, {
+          documentId: id,
+          cursor: cursor ?? null,
+          limit,
+          previewLength: VERSION_PREVIEW_LENGTH,
+        });
+        const nextCursor = hasMore ? String(versions[versions.length - 1].version) : null;
+        res.status(200).json({ versions: versions.map(toVersionDto), nextCursor });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // Full document state at a version: nearest snapshot + replayed op tail.
+  router.get(
+    "/:id/versions/:version",
+    validate({ params: versionParamsSchema }),
+    async (req, res, next) => {
+      try {
+        const { id, version } = req.params as unknown as { id: string; version: number };
+        await assertCanAccess(deps.db, req.user!.id, id, "viewer");
+        const reconstructed = await reconstructVersion(deps.db, id, version);
+        res.status(200).json({
+          version: reconstructed.version,
+          text: reconstructed.text,
+          state: reconstructed.state,
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // Restore to a version — owner-only. Not a destructive overwrite: it appends a forward
+  // diff of ops (see crdt-service/restore.ts) so connected clients converge normally.
+  router.post(
+    "/:id/restore/:version",
+    validate({ params: versionParamsSchema }),
+    async (req, res, next) => {
+      try {
+        const { id, version } = req.params as unknown as { id: string; version: number };
+        await assertCanAccess(deps.db, req.user!.id, id, "owner");
+        if (!deps.restore) {
+          throw AppError.internal("Restore is not available on this server");
+        }
+
+        const { manager, broadcaster } = deps.restore;
+        const store = await manager.acquire(id);
+        try {
+          const result = await performRestore(
+            store,
+            { db: deps.db, broadcaster },
+            { documentId: id, version, userId: req.user!.id },
+          );
+          res.status(200).json({ restore: result });
+        } finally {
+          manager.release(id);
+        }
       } catch (err) {
         next(err);
       }

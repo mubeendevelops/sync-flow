@@ -36,6 +36,8 @@ export {
   applyRemote,
 } from "./operations.js";
 
+export { type ReconcileOptions, reconcileToText } from "./reconcile.js";
+
 export {
   type Cursor,
   visibleIdAt,

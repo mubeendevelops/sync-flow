@@ -21,7 +21,7 @@ import { RGADocument, applyRemote, type DocumentIdentity, type Op } from "@sync-
 import type { DbClient } from "../db/types.js";
 import { hydrateDocument } from "./hydrate.js";
 import { appendOperations, type PersistedOp } from "./op-log.repo.js";
-import { writeSnapshot } from "./snapshot.repo.js";
+import { writeSnapshot, type SnapshotMeta } from "./snapshot.repo.js";
 import { writeCachedState, type CrdtStateCache } from "./cache.js";
 import { OpWriter, type OpWriterOptions } from "./op-writer.js";
 import { SnapshotPolicy, type SnapshotPolicyOptions } from "./snapshot-policy.js";
@@ -129,10 +129,29 @@ export class DocumentStore {
       });
   }
 
-  private async doSnapshot(seq: number): Promise<void> {
+  private async doSnapshot(seq: number, meta?: SnapshotMeta): Promise<void> {
     const state = this.doc.toSnapshot();
-    await writeSnapshot(this.deps.db, this.documentId, seq, state, this.doc.text());
+    await writeSnapshot(this.deps.db, this.documentId, seq, state, this.doc.text(), meta);
     await writeCachedState(this.deps.cache, this.documentId, seq, state);
+  }
+
+  /**
+   * Force an immediate snapshot of the CURRENT doc at the current durable watermark,
+   * with optional version-history metadata (restore points). Flushes buffered ops
+   * first so the watermark reflects them, then chains onto the same snapshot queue
+   * as the automatic policy so the two never overlap or race the watermark. Returns
+   * the seq the snapshot was taken at.
+   *
+   * Does NOT block editing: `flush` only awaits durable I/O and the snapshot runs off
+   * the edit-apply path — connected clients keep editing throughout.
+   */
+  async captureSnapshot(meta?: SnapshotMeta): Promise<number> {
+    await this.writer.flush();
+    const seq = this.latestSeq;
+    const run = this.snapshotting.then(() => this.doSnapshot(seq, meta));
+    this.snapshotting = run.catch(() => undefined);
+    await run;
+    return seq;
   }
 
   /** Flush buffered ops and wait for any in-flight snapshot. Does not close. */

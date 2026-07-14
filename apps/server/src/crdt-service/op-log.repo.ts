@@ -123,3 +123,27 @@ export async function getOperationsAfter(
   );
   return rows.map((row) => ({ seq: Number(row.seq), op: rowToOp(row) }));
 }
+
+/**
+ * Operations with `afterSeq < seq <= throughSeq`, oldest first — the bounded tail to
+ * replay on top of a snapshot at `afterSeq` to reconstruct exactly the state at
+ * `throughSeq` (a historical version), never past it. Between a snapshot and the next
+ * this is bounded by the snapshot cadence (~100 ops), so a single unpaginated read is
+ * fine — same rationale as `getOperationsAfter`.
+ */
+export async function getOperationsInRange(
+  db: DbClient,
+  documentId: string,
+  afterSeq: number,
+  throughSeq: number,
+): Promise<ReplayOp[]> {
+  const { rows } = await db.query<OperationRow & { seq: string }>(
+    `SELECT seq, op_type, char_id, after_id, value, replica_id, lamport_clock, op_version,
+            user_id, created_at
+     FROM document_operations
+     WHERE document_id = $1 AND seq > $2 AND seq <= $3
+     ORDER BY seq ASC`,
+    [documentId, afterSeq, throughSeq],
+  );
+  return rows.map((row) => ({ seq: Number(row.seq), op: rowToOp(row) }));
+}
