@@ -58,7 +58,9 @@ export interface SocketErrorPayload {
 }
 
 /** Result envelope returned through a Socket.io ack callback. */
-export type AckResult<T> = { readonly ok: true; readonly data: T } | { readonly ok: false; readonly error: SocketErrorPayload };
+export type AckResult<T> =
+  | { readonly ok: true; readonly data: T }
+  | { readonly ok: false; readonly error: SocketErrorPayload };
 
 export type Ack<T> = (result: AckResult<T>) => void;
 

@@ -12,7 +12,7 @@
  * convergence.
  */
 
-import type { DocumentIdentity } from "@sync-flow/crdt";
+import type { DocumentIdentity, Op } from "@sync-flow/crdt";
 import type { DbClient } from "../db/types.js";
 import {
   DocumentStore,
@@ -81,6 +81,22 @@ export class DocumentRoomManager {
     void room.loading
       .then((store) => store.close())
       .catch((err) => this.deps.logger?.error({ err, documentId }, "store close failed"));
+  }
+
+  /**
+   * Fold ops applied+persisted by a PEER instance into this document's store, if
+   * it's open locally — a no-op if this instance has no local socket in that room
+   * (nothing to keep convergent; the next local join rehydrates fresh from Postgres).
+   */
+  applyPeerOps(documentId: string, ops: readonly Op[]): void {
+    const room = this.rooms.get(documentId);
+    if (!room) return;
+    void room.loading
+      .then((store) => store.applyPeerOps(ops))
+      .catch(() => {
+        // The load already failed and was reported/evicted by `acquire`'s own catch —
+        // nothing further to do with a peer op for a store that never came up.
+      });
   }
 
   /** Number of currently-open documents (for tests/observability). */

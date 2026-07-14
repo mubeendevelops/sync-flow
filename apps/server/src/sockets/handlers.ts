@@ -17,10 +17,15 @@ import { applyRemote, type Op } from "@sync-flow/crdt";
 import type { DbClient } from "../db/types.js";
 import { AppError } from "../errors/app-error.js";
 import { assertCanAccess } from "../documents/permissions.js";
-import { getOperationsAfter, type DocumentStore, type DocumentStoreLogger } from "../crdt-service/index.js";
+import {
+  getOperationsAfter,
+  type DocumentStore,
+  type DocumentStoreLogger,
+} from "../crdt-service/index.js";
 import { DocumentRoomManager } from "./room-manager.js";
 import { parseEditPayload } from "./op-schema.js";
 import { respondError } from "./errors.js";
+import type { PeerOpRelay } from "./peer-relay.js";
 import {
   listPresence,
   removePresence,
@@ -57,6 +62,8 @@ export interface DocHandlerDeps {
   readonly logger?: DocumentStoreLogger;
   /** Gap (ops) above which `sync` ships a full snapshot instead of the op tail. Default 500. */
   readonly syncThreshold?: number;
+  /** Cross-instance peer-apply relay; omit for a single-instance/in-memory setup. */
+  readonly peerRelay?: PeerOpRelay;
 }
 
 const DEFAULT_SYNC_THRESHOLD = 500;
@@ -82,7 +89,7 @@ async function getUserPresenceInfo(
 }
 
 export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): void {
-  const { db, manager, presence, logger } = deps;
+  const { db, manager, presence, logger, peerRelay } = deps;
   const syncThreshold = deps.syncThreshold ?? DEFAULT_SYNC_THRESHOLD;
 
   // Per-socket state, established on `join`.
@@ -151,7 +158,10 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
     }
   }
 
-  async function handleEdit(payload: EditPayload, ack: Ack<{ seq: number; count: number }>): Promise<void> {
+  async function handleEdit(
+    payload: EditPayload,
+    ack: Ack<{ seq: number; count: number }>,
+  ): Promise<void> {
     try {
       const documentId = socket.data.documentId;
       if (!documentId || !store) throw AppError.badRequest("Join a document before editing");
@@ -176,6 +186,9 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
 
       // Relay to everyone else in the room (this instance + peers via the Redis adapter).
       socket.to(documentId).emit("operation", { ops, seq: store.currentSeq });
+      // Keep every OTHER instance's own materialized copy convergent too (peer-apply;
+      // the socket relay above only reaches connected clients, not peer servers' stores).
+      peerRelay?.publish(documentId, ops);
       await touchPresence(presence, documentId);
 
       ack({ ok: true, data: { seq: store.currentSeq, count: ops.length } });
@@ -220,7 +233,10 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
         return;
       }
       // Too far behind: a fresh snapshot is cheaper than the op tail.
-      ack({ ok: true, data: { mode: "snapshot", snapshot: store.doc.toSnapshot(), seq: currentSeq } });
+      ack({
+        ok: true,
+        data: { mode: "snapshot", snapshot: store.doc.toSnapshot(), seq: currentSeq },
+      });
     } catch (err) {
       respondError(socket, ack, err, logger);
     }

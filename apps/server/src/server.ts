@@ -6,6 +6,8 @@ import { createRedisClient } from "@/cache/client.js";
 import { createApp } from "@/app.js";
 import { createSocketServer } from "@/sockets/io.js";
 import { createRedisAdapter } from "@/sockets/adapter.js";
+import { createPeerOpRelay } from "@/sockets/peer-relay.js";
+import { DocumentRoomManager } from "@/sockets/room-manager.js";
 import { parseTtlToSeconds } from "@/auth/tokens.js";
 
 async function main(): Promise<void> {
@@ -33,13 +35,19 @@ async function main(): Promise<void> {
 
   const httpServer = createServer(app);
   const { adapter, pub, sub } = await createRedisAdapter(redis);
-  const { io, manager } = createSocketServer(httpServer, {
+  // Built up-front (rather than left to createSocketServer's internal default) so the
+  // peer-apply relay below can be wired to the same manager before any connection lands.
+  const manager = new DocumentRoomManager({ db: pool, cache: redis, logger });
+  const peerRelay = await createPeerOpRelay(redis, manager, logger);
+  const { io } = createSocketServer(httpServer, {
     corsOrigin: config.CORS_ORIGIN,
     jwtAccessSecret: config.JWT_ACCESS_SECRET,
     db: pool,
     cache: redis,
     logger,
     adapter,
+    manager,
+    peerRelay,
   });
 
   httpServer.listen(config.PORT, () => {
@@ -64,6 +72,7 @@ async function main(): Promise<void> {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });
       await pool.end();
+      await peerRelay.close();
       await Promise.all([pub.quit(), sub.quit()]);
       await redis.quit();
 

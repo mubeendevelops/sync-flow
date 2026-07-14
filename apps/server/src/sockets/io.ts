@@ -8,6 +8,7 @@ import { DocumentRoomManager } from "./room-manager.js";
 import { registerDocHandlers, type DocSocket } from "./handlers.js";
 import { TokenBucket, type TokenBucketOptions } from "./rate-limit.js";
 import type { PresenceCache } from "./presence.js";
+import type { PeerOpRelay } from "./peer-relay.js";
 import type {
   ClientToServerEvents,
   InterServerEvents,
@@ -26,6 +27,10 @@ export interface SocketServerDeps {
   readonly adapter?: ReturnType<typeof createAdapter>;
   readonly rate?: TokenBucketOptions;
   readonly syncThreshold?: number;
+  /** Pre-built room manager to share with a peer-apply relay; built internally if omitted. */
+  readonly manager?: DocumentRoomManager;
+  /** Cross-instance peer-apply relay for the server-side materialized CRDT copy (see peer-relay.ts). */
+  readonly peerRelay?: PeerOpRelay;
 }
 
 export type DocIOServer = SocketIOServer<
@@ -57,6 +62,11 @@ function scheduleAuthExpiry(socket: DocSocket): void {
 export function createSocketServer(httpServer: HttpServer, deps: SocketServerDeps): SocketServer {
   const io: DocIOServer = new SocketIOServer(httpServer, {
     cors: { origin: deps.corsOrigin, credentials: true },
+    // Websocket-only (no HTTP long-polling fallback): a stateless deploy needs no
+    // load-balancer session affinity because there's no multi-request polling
+    // handshake that could land on a different instance mid-connect. Clients must
+    // pass `transports: ["websocket"]` too (see Decision Log).
+    transports: ["websocket"],
   });
 
   if (deps.adapter) io.adapter(deps.adapter);
@@ -64,7 +74,9 @@ export function createSocketServer(httpServer: HttpServer, deps: SocketServerDep
   // Same JWT verification as REST — verified on the HTTP upgrade before the socket connects.
   io.use(authenticateSocket({ jwtAccessSecret: deps.jwtAccessSecret }));
 
-  const manager = new DocumentRoomManager({ db: deps.db, cache: deps.cache, logger: deps.logger });
+  const manager =
+    deps.manager ??
+    new DocumentRoomManager({ db: deps.db, cache: deps.cache, logger: deps.logger });
 
   io.on("connection", (socket) => {
     socket.data.rate = new TokenBucket(deps.rate);
@@ -75,6 +87,7 @@ export function createSocketServer(httpServer: HttpServer, deps: SocketServerDep
       presence: deps.cache,
       logger: deps.logger,
       syncThreshold: deps.syncThreshold,
+      peerRelay: deps.peerRelay,
     });
   });
 

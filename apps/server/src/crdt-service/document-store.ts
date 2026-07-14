@@ -17,7 +17,7 @@
  * its own op-log row didn't — a durability bonus, never a hazard.)
  */
 
-import { RGADocument, type DocumentIdentity, type Op } from "@sync-flow/crdt";
+import { RGADocument, applyRemote, type DocumentIdentity, type Op } from "@sync-flow/crdt";
 import type { DbClient } from "../db/types.js";
 import { hydrateDocument } from "./hydrate.js";
 import { appendOperations, type PersistedOp } from "./op-log.repo.js";
@@ -95,6 +95,20 @@ export class DocumentStore {
     this.writer.enqueue(op, userId);
   }
 
+  /**
+   * Fold ops already applied+persisted by ANOTHER server instance into this
+   * instance's in-memory copy (see `sockets/peer-relay.ts`). Never re-persisted —
+   * the origin instance already wrote the durable row — and never advances
+   * `latestSeq` (only THIS instance's own persisted ops do that; a peer op's seq
+   * belongs to the origin's watermark, not ours). A snapshot taken here may embed
+   * peer chars under a watermark lower than what actually produced them, but that's
+   * safe: replay-on-load re-applies ops with `seq > watermark`, and CRDT idempotency
+   * makes re-applying an already-embedded op a no-op.
+   */
+  applyPeerOps(ops: readonly Op[]): void {
+    for (const op of ops) applyRemote(this.doc, op);
+  }
+
   private onPersisted(persisted: PersistedOp[]): void {
     for (const p of persisted) {
       if (p.seq > this.latestSeq) this.latestSeq = p.seq;
@@ -108,9 +122,11 @@ export class DocumentStore {
     // snapshot, not one per callback.
     this.policy.reset();
     const seq = this.latestSeq;
-    this.snapshotting = this.snapshotting.then(() => this.doSnapshot(seq)).catch((err) => {
-      this.deps.logger?.error({ err, documentId: this.documentId }, "snapshot write failed");
-    });
+    this.snapshotting = this.snapshotting
+      .then(() => this.doSnapshot(seq))
+      .catch((err) => {
+        this.deps.logger?.error({ err, documentId: this.documentId }, "snapshot write failed");
+      });
   }
 
   private async doSnapshot(seq: number): Promise<void> {

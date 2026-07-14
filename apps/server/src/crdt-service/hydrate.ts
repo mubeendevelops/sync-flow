@@ -13,7 +13,12 @@
  * caller resumes from ("give me ops after seq") and stamps onto future snapshots.
  */
 
-import { RGADocument, applyRemote, type DocumentIdentity, type DocumentSnapshot } from "@sync-flow/crdt";
+import {
+  RGADocument,
+  applyRemote,
+  type DocumentIdentity,
+  type DocumentSnapshot,
+} from "@sync-flow/crdt";
 import type { DbClient } from "../db/types.js";
 import { getLatestSnapshot } from "./snapshot.repo.js";
 import { getOperationsAfter } from "./op-log.repo.js";

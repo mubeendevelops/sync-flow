@@ -102,10 +102,7 @@ describe("real-time socket layer", () => {
     return { ownerId: user!.id, documentId: doc!.id };
   }
 
-  async function addCollaborator(
-    documentId: string,
-    role: "editor" | "viewer",
-  ): Promise<string> {
+  async function addCollaborator(documentId: string, role: "editor" | "viewer"): Promise<string> {
     seedCounter += 1;
     const n = seedCounter;
     const {
@@ -129,6 +126,7 @@ describe("real-time socket layer", () => {
   function connect(userId?: string): Promise<ClientSocket> {
     const socket = ioClient(url, {
       reconnection: false,
+      transports: ["websocket"],
       extraHeaders: userId ? { Cookie: cookieFor(userId) } : {},
     });
     clients.push(socket);
@@ -169,6 +167,7 @@ describe("real-time socket layer", () => {
   it("rejects a connection with an invalid token", async () => {
     const socket = ioClient(url, {
       reconnection: false,
+      transports: ["websocket"],
       extraHeaders: { Cookie: `${ACCESS_TOKEN_COOKIE}=not-a-real-jwt` },
     });
     clients.push(socket);
@@ -252,13 +251,33 @@ describe("real-time socket layer", () => {
     await emit(owner, "join", { documentId });
 
     const badVersion = await emit(owner, "edit", {
-      ops: [{ type: "insert", charId: { clock: 1, replicaId: "r" }, afterId: { clock: 0, replicaId: "ROOT" }, value: "x", authorId: "a", timestamp: 1, opVersion: 999 }],
+      ops: [
+        {
+          type: "insert",
+          charId: { clock: 1, replicaId: "r" },
+          afterId: { clock: 0, replicaId: "ROOT" },
+          value: "x",
+          authorId: "a",
+          timestamp: 1,
+          opVersion: 999,
+        },
+      ],
     });
     expect(badVersion.ok).toBe(false);
     if (!badVersion.ok) expect(badVersion.error.code).toBe(400);
 
     const emptyValue = await emit(owner, "edit", {
-      ops: [{ type: "insert", charId: { clock: 1, replicaId: "r" }, afterId: { clock: 0, replicaId: "ROOT" }, value: "", authorId: "a", timestamp: 1, opVersion: 1 }],
+      ops: [
+        {
+          type: "insert",
+          charId: { clock: 1, replicaId: "r" },
+          afterId: { clock: 0, replicaId: "ROOT" },
+          value: "",
+          authorId: "a",
+          timestamp: 1,
+          opVersion: 1,
+        },
+      ],
     });
     expect(emptyValue.ok).toBe(false);
 
