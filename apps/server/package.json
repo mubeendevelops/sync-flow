@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "migrate": "dotenv -e ../../.env -- node-pg-migrate up -j sql",
     "migrate:down": "dotenv -e ../../.env -- node-pg-migrate down -j sql",
     "migrate:new": "node-pg-migrate create -j sql",
@@ -24,6 +25,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
+    "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.13.1",
     "pino": "^10.3.1",
@@ -33,6 +35,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.10",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

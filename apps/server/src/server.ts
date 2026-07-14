@@ -15,12 +15,28 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config.NODE_ENV, config.LOG_LEVEL);
 
+  // Last-resort safety net for a Redis outage: `@socket.io/redis-adapter` fires ~10
+  // internal `pubClient.publish(...)` calls (inside `socket.to(...).emit(...)`) without
+  // ever catching their rejection — a library limitation, not something reachable from
+  // our own try/catch blocks. Every redis client WE construct has its own `error`
+  // listener (see `redis.on("error", ...)` below and adapter.ts/peer-relay.ts), so this
+  // only catches what those can't: an unhandled promise rejection surfacing from inside
+  // a dependency. Logging-and-continuing (not exiting) is deliberate here — the
+  // hardening requirement is "queue and retry, not crash", and the underlying redis
+  // client already retries connections with backoff on its own.
+  process.on("unhandledRejection", (err) => {
+    logger.error({ err }, "unhandled rejection (surviving — see server.ts for why)");
+  });
+  process.on("uncaughtException", (err) => {
+    logger.error({ err }, "uncaught exception (surviving — see server.ts for why)");
+  });
+
   const pool = createPgPool(config.DATABASE_URL);
   const redis = createRedisClient(config.REDIS_URL);
   redis.on("error", (err) => logger.error({ err }, "redis client error"));
   await redis.connect();
 
-  const { adapter, pub, sub } = await createRedisAdapter(redis);
+  const { adapter, pub, sub } = await createRedisAdapter(redis, logger);
   // Built up-front (rather than left to createSocketServer's internal default) so both
   // the peer-apply relay and the REST restore endpoint can be wired to the same manager
   // before any connection lands.

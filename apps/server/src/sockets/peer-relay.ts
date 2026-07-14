@@ -58,6 +58,11 @@ export async function createPeerOpRelay(
   const originId = randomUUID();
   const pub = base.duplicate();
   const sub = base.duplicate();
+  // Each `duplicate()` is its own socket/EventEmitter, NOT covered by the base client's
+  // error handler in server.ts — an unhandled `error` event here crashes the whole process
+  // (see the matching note in adapter.ts, and the PLAN.md chaos findings this fixes).
+  pub.on("error", (err: unknown) => logger?.error({ err }, "peer-relay pub connection error"));
+  sub.on("error", (err: unknown) => logger?.error({ err }, "peer-relay sub connection error"));
   await Promise.all([pub.connect(), sub.connect()]);
 
   await sub.subscribe(CHANNEL, (message) => {

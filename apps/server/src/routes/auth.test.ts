@@ -162,6 +162,16 @@ describe("auth routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.user.username).toBe("alice");
     });
+
+    it("returns 401 if the user was deleted after the access token was issued", async () => {
+      const agent = request.agent(app);
+      await agent.post("/api/v1/auth/signup").send(validSignupBody());
+      await pool.query("DELETE FROM users WHERE username = $1", ["alice"]);
+
+      const res = await agent.get("/api/v1/auth/me");
+      expect(res.status).toBe(401);
+      expect(res.body.detail).toBe("User no longer exists");
+    });
   });
 
   describe("POST /api/v1/auth/logout", () => {
@@ -208,6 +218,19 @@ describe("auth routes", () => {
         .set("Cookie", [`refresh_token=${refreshToken}`, `csrf_token=${csrfToken}`])
         .set("X-CSRF-Token", csrfToken!);
       expect(reuseRes.status).toBe(401);
+    });
+
+    it("still succeeds with no refresh_token cookie to revoke (access + CSRF cookies only)", async () => {
+      const signupRes = await request(app).post("/api/v1/auth/signup").send(validSignupBody());
+      const setCookie = signupRes.headers["set-cookie"] as unknown as string[];
+      const accessToken = extractCookie(setCookie, "access_token");
+      const csrfToken = extractCookie(setCookie, "csrf_token");
+
+      const logoutRes = await request(app)
+        .post("/api/v1/auth/logout")
+        .set("Cookie", [`access_token=${accessToken}`, `csrf_token=${csrfToken}`])
+        .set("X-CSRF-Token", csrfToken!);
+      expect(logoutRes.status).toBe(204);
     });
   });
 

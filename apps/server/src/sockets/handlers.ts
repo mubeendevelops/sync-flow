@@ -145,6 +145,21 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
   let store: DocumentStore | null = null;
   let presenceUser: PresenceUser | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
+  // A socket joins at most one document for its whole lifetime (re-join is rejected
+  // below), so exactly one `manager.acquire()` ever happens per socket and exactly one
+  // `manager.release()` must ever answer it. Without this guard, a slow `join` (e.g.
+  // stuck awaiting a Redis call during an outage) racing a client-initiated `disconnect`
+  // on the same socket double-releases: `disconnect` fires its cleanup first, then the
+  // still-in-flight `join`'s own catch block — unaware anything already ran — releases
+  // again, which can drop a DIFFERENT client's still-open `DocumentStore` to zero refs
+  // and close it out from under them. Both cleanup paths must go through this instead of
+  // calling `manager.release()` directly.
+  let released = false;
+  function releaseOnce(documentId: string): void {
+    if (released) return;
+    released = true;
+    manager.release(documentId);
+  }
 
   function startHeartbeat(documentId: string): void {
     heartbeat = setInterval(() => {
@@ -219,7 +234,7 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
       });
     } catch (err) {
       if (acquired && documentId) {
-        manager.release(documentId);
+        releaseOnce(documentId);
         socket.data.documentId = undefined;
         socket.data.role = undefined;
         store = null;
@@ -267,12 +282,25 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
       // Keep every OTHER instance's own materialized copy convergent too (peer-apply;
       // the socket relay above only reaches connected clients, not peer servers' stores).
       peerRelay?.publish(documentId, ops);
-      await touchPresence(presence, documentId);
+      // Fire-and-forget: presence is an ephemeral, non-source-of-truth convenience (PLAN
+      // Decision Log). The op above is already applied, persisted, and broadcast — a
+      // Redis hiccup touching the presence TTL must never turn an edit/undo/redo that
+      // actually succeeded into an error ack to the client that sent it.
+      void touchPresence(presence, documentId).catch((err: unknown) =>
+        logger?.error({ err, documentId }, "presence touch failed"),
+      );
 
       // One edit event = one undo unit; pushing it also clears this user's redo stack.
-      // Await so an immediately-following undo is guaranteed to see it.
+      // Await (not fire-and-forget) so an immediately-following undo is guaranteed to
+      // see it — but the edit above already succeeded and was broadcast, so a Redis
+      // failure here must degrade to "this edit isn't undoable" (logged), never to
+      // reporting the edit itself as failed back to the client that sent it.
       if (undoStack) {
-        await recordEdit(undoStack, documentId, socket.data.user.id, { ops: undoRecords });
+        try {
+          await recordEdit(undoStack, documentId, socket.data.user.id, { ops: undoRecords });
+        } catch (err) {
+          logger?.error({ err, documentId }, "recordEdit failed — this edit will not be undoable");
+        }
       }
 
       ack({ ok: true, data: { seq: store.currentSeq, count: ops.length } });
@@ -362,7 +390,10 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
    * locally). Each user's stacks are independent, so two users' undos never interact.
    * An empty stack acks silently with `applied: 0`.
    */
-  async function handleUndoRedo(direction: UndoDirection, ack: Ack<{ applied: number; seq: number }>): Promise<void> {
+  async function handleUndoRedo(
+    direction: UndoDirection,
+    ack: Ack<{ applied: number; seq: number }>,
+  ): Promise<void> {
     try {
       const documentId = socket.data.documentId;
       if (!documentId || !store) throw AppError.badRequest("Join a document before undo/redo");
@@ -390,7 +421,13 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
       // locally), across instances via the adapter; keep peer stores convergent too.
       socket.nsp.to(documentId).emit("operation", { ops, seq: store.currentSeq });
       peerRelay?.publish(documentId, ops);
-      await touchPresence(presence, documentId);
+      // Fire-and-forget: presence is an ephemeral, non-source-of-truth convenience (PLAN
+      // Decision Log). The op above is already applied, persisted, and broadcast — a
+      // Redis hiccup touching the presence TTL must never turn an edit/undo/redo that
+      // actually succeeded into an error ack to the client that sent it.
+      void touchPresence(presence, documentId).catch((err: unknown) =>
+        logger?.error({ err, documentId }, "presence touch failed"),
+      );
 
       // Undo → the entry becomes redoable; redo → it becomes undoable again. Neither
       // clears the opposite stack (only a fresh `edit` clears redo).
@@ -425,8 +462,9 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
     } catch (err) {
       logger?.error({ err, documentId }, "presence cleanup failed on disconnect");
     } finally {
-      // Always release the room ref so the store closes on last-client-disconnect.
-      manager.release(documentId);
+      // Always release the room ref so the store closes on last-client-disconnect (see
+      // `releaseOnce` above for why this can't be a bare `manager.release()` call).
+      releaseOnce(documentId);
     }
   }
 }

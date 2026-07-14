@@ -13,5 +13,15 @@ export default defineConfig({
     // speed for correctness; per-file databases would keep parallelism but aren't worth the
     // extra infra at this suite's size.
     fileParallelism: false,
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      exclude: ["src/**/*.test.ts", "src/test/**", "src/server.ts", "src/seed.ts"],
+      reporter: ["text", "json-summary"],
+      thresholds: {
+        lines: 80,
+        statements: 80,
+      },
+    },
   },
 });

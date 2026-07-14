@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import { pinoHttp } from "pino-http";
 import type { Logger } from "pino";
@@ -26,9 +27,32 @@ export function createApp(deps: AppDeps): Express {
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(pinoHttp({ logger: deps.logger }));
+  app.use(helmet());
+  app.use(
+    pinoHttp({
+      logger: deps.logger,
+      // pino-http's default req/res serializers log EVERY raw header verbatim — that
+      // includes the Cookie header (carrying the httpOnly JWT access/refresh tokens and
+      // the CSRF cookie), any Authorization header, and Set-Cookie on the way out. Redact
+      // by path rather than dropping headers wholesale so the rest of the request/response
+      // shape stays visible for debugging.
+      redact: {
+        paths: [
+          "req.headers.cookie",
+          "req.headers.authorization",
+          'req.headers["x-csrf-token"]',
+          'res.headers["set-cookie"]',
+        ],
+        censor: "[redacted]",
+      },
+    }),
+  );
   app.use(cors({ origin: deps.corsOrigin, credentials: true }));
-  app.use(express.json());
+  // 64KB cap: generously above any real request this API accepts (documents/versions are
+  // CRDT snapshots read from Postgres, never uploaded whole; the largest client payload is
+  // an `edit` batch over the WS transport, not HTTP) — this just bounds the JSON body parser
+  // itself against an oversized/abusive request.
+  app.use(express.json({ limit: "64kb" }));
   app.use(cookieParser());
 
   app.use(createHealthRouter({ db: deps.db, cache: deps.cache }));
