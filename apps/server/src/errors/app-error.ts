@@ -55,4 +55,8 @@ export class AppError extends Error {
   static internal(detail?: string, cause?: unknown): AppError {
     return new AppError({ status: 500, title: "Internal Server Error", detail, cause });
   }
+
+  static notImplemented(detail?: string): AppError {
+    return new AppError({ status: 501, title: "Not Implemented", detail });
+  }
 }

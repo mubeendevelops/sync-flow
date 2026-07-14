@@ -54,6 +54,17 @@ export interface EditResult {
 }
 
 /**
+ * Result of an `undo`/`redo`. `applied` is the number of forward ops emitted (0 when
+ * the user's stack was empty — a silent no-op). The resulting ops arrive via the normal
+ * `operation` broadcast, which for undo/redo includes the acting client itself (it did
+ * not apply them locally).
+ */
+export interface UndoResult {
+  readonly applied: number;
+  readonly seq: number;
+}
+
+/**
  * Server's answer to a `sync`. `seq` is always the server's current durable
  * watermark, so the client can drive its "Reconnecting…/all changes saved" indicator
  * off it regardless of mode.
@@ -90,6 +101,9 @@ export interface ClientToServerEvents {
   edit: (payload: EditPayload, ack: Ack<EditResult>) => void;
   cursor: (payload: CursorPayload) => void;
   sync: (payload: SyncPayload, ack: Ack<SyncResult>) => void;
+  // Collaborative undo/redo: no payload — each acts on the caller's own per-doc stack.
+  undo: (ack: Ack<UndoResult>) => void;
+  redo: (ack: Ack<UndoResult>) => void;
 }
 
 export interface ServerToClientEvents {

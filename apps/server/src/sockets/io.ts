@@ -9,6 +9,7 @@ import { registerDocHandlers, type DocSocket } from "./handlers.js";
 import { TokenBucket, type TokenBucketOptions } from "./rate-limit.js";
 import type { PresenceCache } from "./presence.js";
 import type { PeerOpRelay } from "./peer-relay.js";
+import type { UndoStackCache } from "./undo-stack.js";
 import type {
   ClientToServerEvents,
   InterServerEvents,
@@ -33,6 +34,8 @@ export interface SocketServerDeps {
   readonly manager?: DocumentRoomManager;
   /** Cross-instance peer-apply relay for the server-side materialized CRDT copy (see peer-relay.ts). */
   readonly peerRelay?: PeerOpRelay;
+  /** Redis-backed per-user undo/redo stacks; omit to disable undo/redo. */
+  readonly undoStack?: UndoStackCache;
 }
 
 export type DocIOServer = SocketIOServer<
@@ -90,6 +93,7 @@ export function createSocketServer(httpServer: HttpServer, deps: SocketServerDep
       logger: deps.logger,
       syncThreshold: deps.syncThreshold,
       peerRelay: deps.peerRelay,
+      undoStack: deps.undoStack,
       heartbeatIntervalMs: deps.heartbeatIntervalMs,
     });
   });

@@ -29,6 +29,7 @@ export {
   type Op,
   type InsertOp,
   type DeleteOp,
+  type ReviveOp,
   type LocalInsertOptions,
   OP_VERSION,
   localInsert,

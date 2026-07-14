@@ -192,7 +192,7 @@ export interface OperationRecord {
   document_id: string;
   user_id: string | null;
   seq: string;
-  op_type: "insert" | "delete";
+  op_type: "insert" | "delete" | "revive";
   char_id: string;
   after_id: string | null;
   value: string | null;

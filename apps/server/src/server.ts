@@ -67,6 +67,8 @@ async function main(): Promise<void> {
     adapter,
     manager,
     peerRelay,
+    // The redis client backs the per-user undo/redo lists (undo:/redo: keys).
+    undoStack: redis,
   });
   ioRef = io;
 

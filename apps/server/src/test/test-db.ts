@@ -71,7 +71,25 @@ export async function setupTestDb(): Promise<pg.Pool> {
   return new pg.Pool({ connectionString: TEST_DATABASE_URL });
 }
 
-/** Clears all auth-relevant rows between tests. CASCADE covers refresh_tokens + any doc rows. */
+/**
+ * Clears all auth-relevant rows between tests. CASCADE covers refresh_tokens + any doc rows.
+ *
+ * `TRUNCATE ... CASCADE` takes an ACCESS EXCLUSIVE lock, so two test-file workers cleaning
+ * the shared DB at the same instant can deadlock (Postgres error 40P01). A deadlock is
+ * always safe to retry — Postgres already rolled the loser back — so a short retry loop
+ * makes the parallel suite deterministic without serializing the workers.
+ */
 export async function truncateAll(pool: pg.Pool): Promise<void> {
-  await pool.query("TRUNCATE TABLE users RESTART IDENTITY CASCADE");
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await pool.query("TRUNCATE TABLE users RESTART IDENTITY CASCADE");
+      return;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      // 40P01 = deadlock, 40001 = serialization failure — both are retriable.
+      if ((code !== "40P01" && code !== "40001") || attempt === maxAttempts) throw err;
+      await sleep(50 * attempt);
+    }
+  }
 }

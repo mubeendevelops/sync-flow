@@ -26,12 +26,19 @@
  */
 
 import { type CharId, ROOT, encodeId, decodeId, compareId, isRoot, LamportClock } from "./id.js";
-import type { InsertOp, DeleteOp } from "./operations.js";
+import type { InsertOp, DeleteOp, ReviveOp } from "./operations.js";
 
 interface Node {
   readonly id: CharId;
   readonly char: string;
   deleted: boolean;
+  /**
+   * LWW visibility stamp: the `(clock, replicaId)` of the op that currently decides
+   * this char's visibility. Baseline is the char's own id (set on insert = visible);
+   * a delete/revive replaces it only if it outranks the current stamp (`compareId`),
+   * so visibility is a last-writer-wins register — commutative, idempotent, convergent.
+   */
+  visStamp: CharId;
   readonly authorId: string;
   /** Wall-clock authorship time — METADATA ONLY, never used for ordering (invariant #5). */
   readonly timestamp: number;
@@ -55,6 +62,13 @@ export interface SnapshotChar {
   readonly authorId: string;
   readonly timestamp: number;
   readonly after: string;
+  /**
+   * Encoded LWW visibility stamp (see `Node.visStamp`). Added in snapshot v2 for
+   * delete/revive convergence; optional so a v1 snapshot (no revives ever existed
+   * then) still loads — it defaults to the char's own id, which any later
+   * delete/revive outranks, so resolution stays correct.
+   */
+  readonly visId?: string;
 }
 
 export interface DocumentSnapshot {
@@ -65,7 +79,8 @@ export interface DocumentSnapshot {
   readonly chars: SnapshotChar[];
 }
 
-export const SNAPSHOT_VERSION = 1;
+/** v2 adds per-char LWW visibility stamps (`SnapshotChar.visId`) for revive/delete. */
+export const SNAPSHOT_VERSION = 2;
 
 export interface DocumentIdentity {
   /** Per-tab replica id used to mint new char ids. */
@@ -84,6 +99,7 @@ export class RGADocument {
   private readonly byId = new Map<string, Node>();
   private readonly pendingInserts = new Map<string, InsertOp[]>();
   private readonly pendingDeletes = new Map<string, DeleteOp[]>();
+  private readonly pendingRevives = new Map<string, ReviveOp[]>();
   private visibleCount = 0;
 
   constructor(identity: DocumentIdentity) {
@@ -96,6 +112,7 @@ export class RGADocument {
       id: ROOT,
       char: "",
       deleted: true,
+      visStamp: ROOT,
       authorId: "ROOT",
       timestamp: 0,
       afterId: ROOT,
@@ -149,6 +166,9 @@ export class RGADocument {
       id: op.charId,
       char: op.value,
       deleted: false,
+      // Baseline visibility stamp = the char's own id; any later delete/revive (whose
+      // clock strictly exceeds this char's) outranks it.
+      visStamp: op.charId,
       authorId: op.authorId,
       timestamp: op.timestamp,
       afterId: op.afterId,
@@ -170,21 +190,52 @@ export class RGADocument {
   }
 
   /**
-   * Integrate a delete as a tombstone. Idempotent (deleting twice is a no-op).
-   * If the target char hasn't been seen yet, the delete is buffered until it is,
-   * so a delete can safely arrive before its insert.
+   * Integrate a delete as a tombstone. Deletes and revives are a last-writer-wins
+   * register on `(clock, replicaId)`: this delete hides the char only if its stamp
+   * outranks the char's current visibility stamp, otherwise it's a stale/duplicate
+   * no-op. Idempotent (the same delete re-applied has an equal stamp → no change) and
+   * commutative (final visibility is the highest stamp regardless of arrival order).
+   * If the target char hasn't been seen yet, the delete is buffered until it is, so a
+   * delete can safely arrive before its insert.
    */
   integrateDelete(op: DeleteOp): IntegrateResult {
+    if (isRoot(op.charId)) return "noop";
     const key = encodeId(op.charId);
     const node = this.byId.get(key);
     if (!node) {
       this.buffer(this.pendingDeletes, key, op);
       return "buffered";
     }
-    if (node.deleted) return "duplicate";
+    const stamp: CharId = { clock: op.clock, replicaId: op.replicaId };
+    if (compareId(stamp, node.visStamp) <= 0) return "duplicate"; // stale or exact dup — LWW loser
 
+    if (!node.deleted) this.visibleCount -= 1;
     node.deleted = true;
-    this.visibleCount -= 1;
+    node.visStamp = stamp;
+    return "applied";
+  }
+
+  /**
+   * Integrate a revive (undo of a delete): make the char visible again by the same
+   * LWW rule — it wins only if its `(clock, replicaId)` outranks the current stamp.
+   * A revive minted to undo a delete always outranks that delete (it's created after
+   * seeing it). Idempotent + commutative like `integrateDelete`, and buffered if the
+   * target char hasn't arrived yet.
+   */
+  integrateRevive(op: ReviveOp): IntegrateResult {
+    if (isRoot(op.charId)) return "noop";
+    const key = encodeId(op.charId);
+    const node = this.byId.get(key);
+    if (!node) {
+      this.buffer(this.pendingRevives, key, op);
+      return "buffered";
+    }
+    const stamp: CharId = { clock: op.clock, replicaId: op.replicaId };
+    if (compareId(stamp, node.visStamp) <= 0) return "duplicate";
+
+    if (node.deleted) this.visibleCount += 1;
+    node.deleted = false;
+    node.visStamp = stamp;
     return "applied";
   }
 
@@ -235,6 +286,7 @@ export class RGADocument {
         authorId: cur.authorId,
         timestamp: cur.timestamp,
         after: encodeId(cur.afterId),
+        visId: encodeId(cur.visStamp),
       });
     }
     return { v: SNAPSHOT_VERSION, clock: this.clock.peek(), chars };
@@ -253,6 +305,8 @@ export class RGADocument {
         id: decodeId(entry.id),
         char: entry.char,
         deleted: entry.deleted,
+        // v2 carries the visibility stamp; a v1 snapshot defaults it to the char's own id.
+        visStamp: entry.visId ? decodeId(entry.visId) : decodeId(entry.id),
         authorId: entry.authorId,
         timestamp: entry.timestamp,
         afterId: decodeId(entry.after),
@@ -276,7 +330,7 @@ export class RGADocument {
 
   /**
    * A node with `key` was just integrated. Retry any inserts that were waiting
-   * on it as their anchor, and any deletes that were waiting on it as their
+   * on it as their anchor, and any deletes/revives that were waiting on it as their
    * target. Retried inserts may in turn unblock further ops, so this cascades.
    */
   private flushPending(key: string): void {
@@ -289,6 +343,11 @@ export class RGADocument {
     if (waitingDeletes) {
       this.pendingDeletes.delete(key);
       for (const op of waitingDeletes) this.integrateDelete(op);
+    }
+    const waitingRevives = this.pendingRevives.get(key);
+    if (waitingRevives) {
+      this.pendingRevives.delete(key);
+      for (const op of waitingRevives) this.integrateRevive(op);
     }
   }
 }

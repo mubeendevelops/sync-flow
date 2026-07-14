@@ -13,7 +13,7 @@
 
 import { z } from "zod";
 import type { Socket } from "socket.io";
-import { applyRemote, type Op } from "@sync-flow/crdt";
+import { applyRemote, encodeId, type Op } from "@sync-flow/crdt";
 import type { DbClient } from "../db/types.js";
 import { AppError } from "../errors/app-error.js";
 import { assertCanAccess } from "../documents/permissions.js";
@@ -27,6 +27,16 @@ import { DocumentRoomManager } from "./room-manager.js";
 import { parseEditPayload } from "./op-schema.js";
 import { respondError } from "./errors.js";
 import type { PeerOpRelay } from "./peer-relay.js";
+import {
+  recordEdit,
+  popUndo,
+  popRedo,
+  pushUndo,
+  pushRedo,
+  type UndoStackCache,
+  type UndoOpRecord,
+} from "./undo-stack.js";
+import { applyUndoEntry, type UndoDirection } from "./undo-service.js";
 import {
   listPresence,
   removePresence,
@@ -65,6 +75,11 @@ export interface DocHandlerDeps {
   readonly syncThreshold?: number;
   /** Cross-instance peer-apply relay; omit for a single-instance/in-memory setup. */
   readonly peerRelay?: PeerOpRelay;
+  /**
+   * Redis-backed per-user undo/redo stacks. Omit to disable undo/redo (the events then
+   * reject with 501); edits still work, they just aren't recorded for undo.
+   */
+  readonly undoStack?: UndoStackCache;
   /**
    * How often a joined socket refreshes its document's presence TTL purely by being
    * connected, independent of edit/cursor activity. Default 20s (see
@@ -122,7 +137,7 @@ async function getUserPresenceInfo(
 }
 
 export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): void {
-  const { db, manager, presence, logger, peerRelay } = deps;
+  const { db, manager, presence, logger, peerRelay, undoStack } = deps;
   const syncThreshold = deps.syncThreshold ?? DEFAULT_SYNC_THRESHOLD;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
 
@@ -156,6 +171,12 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
   });
   socket.on("sync", (payload: SyncPayload, ack) => {
     void handleSync(payload, ack);
+  });
+  socket.on("undo", (ack) => {
+    void handleUndoRedo("undo", ack);
+  });
+  socket.on("redo", (ack) => {
+    void handleUndoRedo("redo", ack);
   });
   socket.on("disconnect", () => {
     void handleDisconnect();
@@ -225,12 +246,19 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
         throw AppError.tooManyRequests("Rate limit exceeded — slow down");
       }
 
+      // Record only the ops that actually changed state (or will, once a dependency
+      // lands) as this edit's undoable unit — a stale/duplicate op has nothing to undo.
+      const undoRecords: UndoOpRecord[] = [];
       for (const op of ops) {
         const result = applyRemote(store.doc, op);
         // Persist anything that changed or was buffered for a later dependency; a
         // duplicate/no-op is already durable (or irrelevant), so skip the redundant row.
         if (result === "applied" || result === "buffered") {
           store.persist(op, socket.data.user.id);
+          // `edit` only carries insert/delete (op-schema); the guard also narrows the type.
+          if (op.type === "insert" || op.type === "delete") {
+            undoRecords.push({ type: op.type, charId: encodeId(op.charId) });
+          }
         }
       }
 
@@ -240,6 +268,12 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
       // the socket relay above only reaches connected clients, not peer servers' stores).
       peerRelay?.publish(documentId, ops);
       await touchPresence(presence, documentId);
+
+      // One edit event = one undo unit; pushing it also clears this user's redo stack.
+      // Await so an immediately-following undo is guaranteed to see it.
+      if (undoStack) {
+        await recordEdit(undoStack, documentId, socket.data.user.id, { ops: undoRecords });
+      }
 
       ack({ ok: true, data: { seq: store.currentSeq, count: ops.length } });
     } catch (err) {
@@ -315,6 +349,58 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
       const tail = await getOperationsAfter(db, documentId, since);
       const ops: Op[] = tail.map((r) => r.op);
       ack({ ok: true, data: { mode: "ops", ops, seq: currentSeq } });
+    } catch (err) {
+      respondError(socket, ack, err, logger);
+    }
+  }
+
+  /**
+   * Collaborative undo/redo. Pops the caller's OWN per-document stack, mints the
+   * inverse (undo) or forward (redo) ops — always visibility toggles of existing char
+   * ids (delete/revive), never re-inserts — applies + persists them, and broadcasts to
+   * the WHOLE room including the caller (unlike `edit`, the caller didn't apply these
+   * locally). Each user's stacks are independent, so two users' undos never interact.
+   * An empty stack acks silently with `applied: 0`.
+   */
+  async function handleUndoRedo(direction: UndoDirection, ack: Ack<{ applied: number; seq: number }>): Promise<void> {
+    try {
+      const documentId = socket.data.documentId;
+      if (!documentId || !store) throw AppError.badRequest("Join a document before undo/redo");
+      if (socket.data.role !== "editor" && socket.data.role !== "owner") {
+        throw AppError.forbidden("Requires editor access");
+      }
+      if (!undoStack) throw AppError.notImplemented("Undo/redo is not available on this server");
+
+      const userId = socket.data.user.id;
+      const entry =
+        direction === "undo"
+          ? await popUndo(undoStack, documentId, userId)
+          : await popRedo(undoStack, documentId, userId);
+
+      // Nothing to undo/redo — silent no-op (edge case: also covers an insert the other
+      // side already deleted, since applying the inverse below is idempotent).
+      if (!entry) {
+        ack({ ok: true, data: { applied: 0, seq: store.currentSeq } });
+        return;
+      }
+
+      const ops = applyUndoEntry(store, entry, direction, userId);
+
+      // Broadcast to everyone in the room INCLUDING the caller (they didn't apply these
+      // locally), across instances via the adapter; keep peer stores convergent too.
+      socket.nsp.to(documentId).emit("operation", { ops, seq: store.currentSeq });
+      peerRelay?.publish(documentId, ops);
+      await touchPresence(presence, documentId);
+
+      // Undo → the entry becomes redoable; redo → it becomes undoable again. Neither
+      // clears the opposite stack (only a fresh `edit` clears redo).
+      if (direction === "undo") {
+        await pushRedo(undoStack, documentId, userId, entry);
+      } else {
+        await pushUndo(undoStack, documentId, userId, entry);
+      }
+
+      ack({ ok: true, data: { applied: ops.length, seq: store.currentSeq } });
     } catch (err) {
       respondError(socket, ack, err, logger);
     }

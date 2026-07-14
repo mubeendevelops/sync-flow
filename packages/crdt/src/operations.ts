@@ -45,14 +45,37 @@ export interface DeleteOp {
   readonly type: "delete";
   /** The char being tombstoned. */
   readonly charId: CharId;
-  /** Deleter's Lamport clock (causality + persistence; not used for convergence). */
+  /**
+   * Deleter's Lamport clock. Together with `replicaId` this is the op's LWW visibility
+   * stamp: a delete only wins (hides the char) if its `(clock, replicaId)` outranks the
+   * char's current visibility stamp. Also drives causality + persistence.
+   */
   readonly clock: number;
-  /** Deleter's replica (metadata + persistence). */
+  /** Deleter's replica (LWW tiebreak + persistence). */
   readonly replicaId: string;
   readonly opVersion: number;
 }
 
-export type Op = InsertOp | DeleteOp;
+/**
+ * Un-tombstone a character (undo of a delete). NOT a re-insert: it targets the SAME
+ * `charId`, so the char reappears at its original RGA position — re-inserting with a
+ * new id would place it elsewhere and break convergence. Deletes and revives resolve
+ * as a last-writer-wins register keyed by `(clock, replicaId)`: whichever visibility
+ * op has the highest stamp determines whether the char is visible. A revive minted to
+ * undo a delete always outranks that delete (it's created after seeing it).
+ */
+export interface ReviveOp {
+  readonly type: "revive";
+  /** The char being made visible again. */
+  readonly charId: CharId;
+  /** Reviver's Lamport clock (LWW visibility stamp + causality + persistence). */
+  readonly clock: number;
+  /** Reviver's replica (LWW tiebreak + persistence). */
+  readonly replicaId: string;
+  readonly opVersion: number;
+}
+
+export type Op = InsertOp | DeleteOp | ReviveOp;
 
 export interface LocalInsertOptions {
   /** Override the wall-clock timestamp (used by tests for determinism). */
@@ -108,6 +131,10 @@ export function applyRemote(doc: RGADocument, op: Op): IntegrateResult {
     doc.clock.receive(op.charId.clock);
     return doc.integrateInsert(op);
   }
+  if (op.type === "delete") {
+    doc.clock.receive(op.clock);
+    return doc.integrateDelete(op);
+  }
   doc.clock.receive(op.clock);
-  return doc.integrateDelete(op);
+  return doc.integrateRevive(op);
 }

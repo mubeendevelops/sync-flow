@@ -10,7 +10,16 @@
  * author field at all, which is exactly why `userId` is passed alongside the op.
  */
 
-import { type Op, type InsertOp, type DeleteOp, encodeId, decodeId } from "@sync-flow/crdt";
+import {
+  type Op,
+  type InsertOp,
+  type DeleteOp,
+  type ReviveOp,
+  encodeId,
+  decodeId,
+} from "@sync-flow/crdt";
+
+type OpType = "insert" | "delete" | "revive";
 
 /** An op plus the authenticated user who produced it (server session context). */
 export interface PendingOp {
@@ -23,7 +32,7 @@ export interface PendingOp {
 export interface OperationRowValues {
   readonly document_id: string;
   readonly user_id: string | null;
-  readonly op_type: "insert" | "delete";
+  readonly op_type: OpType;
   readonly char_id: string;
   readonly after_id: string | null;
   readonly value: string | null;
@@ -34,7 +43,7 @@ export interface OperationRowValues {
 
 /** A persisted row as read back for replay (subset of `document_operations`). */
 export interface OperationRow {
-  readonly op_type: "insert" | "delete";
+  readonly op_type: OpType;
   readonly char_id: string;
   readonly after_id: string | null;
   readonly value: string | null;
@@ -62,14 +71,15 @@ export function opToRowValues(documentId: string, pending: PendingOp): Operation
       op_version: op.opVersion,
     };
   }
+  // delete + revive share a shape: they target an existing char and carry the actor's
+  // own clock/replica (the LWW visibility stamp), with no after_id/value.
   return {
     document_id: documentId,
     user_id: userId,
-    op_type: "delete",
+    op_type: op.type,
     char_id: encodeId(op.charId),
     after_id: null,
     value: null,
-    // For a delete, `charId` is the *target*; the deleter carries its own clock/replica.
     replica_id: op.replicaId,
     lamport_clock: op.clock,
     op_version: op.opVersion,
@@ -90,6 +100,17 @@ export function rowToOp(row: OperationRow): Op {
       // authorId is CRDT metadata only; user_id may be NULL after a user hard-delete.
       authorId: row.user_id ?? "",
       timestamp: row.created_at.getTime(),
+      opVersion: row.op_version,
+    };
+    return op;
+  }
+  // delete + revive decode identically; only the discriminant differs.
+  if (row.op_type === "revive") {
+    const op: ReviveOp = {
+      type: "revive",
+      charId: decodeId(row.char_id),
+      clock: Number(row.lamport_clock),
+      replicaId: row.replica_id,
       opVersion: row.op_version,
     };
     return op;
