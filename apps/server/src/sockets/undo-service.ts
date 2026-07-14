@@ -17,13 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  decodeId,
-  OP_VERSION,
-  type DeleteOp,
-  type ReviveOp,
-  type Op,
-} from "@sync-flow/crdt";
+import { decodeId, OP_VERSION, type DeleteOp, type ReviveOp, type Op } from "@sync-flow/crdt";
 import type { DocumentStore } from "../crdt-service/index.js";
 import type { UndoEntry } from "./undo-stack.js";
 

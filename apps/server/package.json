@@ -19,6 +19,7 @@
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
     "@sync-flow/crdt": "workspace:*",
+    "@sync-flow/schemas": "workspace:*",
     "argon2": "^0.41.1",
     "cookie": "^2.0.1",
     "cookie-parser": "^1.4.7",

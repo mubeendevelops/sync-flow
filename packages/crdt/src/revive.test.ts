@@ -175,10 +175,13 @@ describe("revive (undo of delete)", () => {
   it("property: N delete/revive ops on one char converge to the highest-stamp op's effect", () => {
     fc.assert(
       fc.property(
-        fc.array(fc.record({ kind: fc.constantFrom("del", "rev"), r: fc.integer({ min: 0, max: 3 }) }), {
-          minLength: 0,
-          maxLength: 12,
-        }),
+        fc.array(
+          fc.record({ kind: fc.constantFrom("del", "rev"), r: fc.integer({ min: 0, max: 3 }) }),
+          {
+            minLength: 0,
+            maxLength: 12,
+          },
+        ),
         fc.integer(),
         (actions, seed) => {
           const base = fresh("base");
@@ -190,11 +193,23 @@ describe("revive (undo of delete)", () => {
             const clock = base.clock.tick();
             const replicaId = `r${a.r}`;
             if (a.kind === "del") {
-              const op: DeleteOp = { type: "delete", charId, clock, replicaId, opVersion: OP_VERSION };
+              const op: DeleteOp = {
+                type: "delete",
+                charId,
+                clock,
+                replicaId,
+                opVersion: OP_VERSION,
+              };
               base.integrateDelete(op);
               ops.push(op);
             } else {
-              const op: ReviveOp = { type: "revive", charId, clock, replicaId, opVersion: OP_VERSION };
+              const op: ReviveOp = {
+                type: "revive",
+                charId,
+                clock,
+                replicaId,
+                opVersion: OP_VERSION,
+              };
               base.integrateRevive(op);
               ops.push(op);
             }

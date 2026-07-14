@@ -1,0 +1,29 @@
+{
+  "name": "@sync-flow/schemas",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared zod schemas + typed fetch client for the SyncFlow REST API. Single source of truth for both apps/server request validation and apps/web's API client.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.10"
+  }
+}
