@@ -130,6 +130,30 @@ describe("documents routes", () => {
       const page3 = await owner.agent.get("/api/v1/documents").query({ page: 3, pageSize: 2 });
       expect(page3.body.documents).toHaveLength(1);
     });
+
+    it("reports the requester's own role and the full collaborator list per document", async () => {
+      const owner = await createUser();
+      const editor = await createUser();
+      const doc = await createDocument(owner.agent);
+      await owner.agent
+        .post(`/api/v1/documents/${doc.id}/invite`)
+        .send({ email: editor.email, role: "editor" });
+
+      const ownerView = await owner.agent.get("/api/v1/documents");
+      expect(ownerView.body.documents[0].role).toBe("owner");
+      const ownerCollaborators = ownerView.body.documents[0].collaborators;
+      expect(ownerCollaborators).toHaveLength(2);
+      expect(ownerCollaborators).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ userId: owner.userId, role: "owner" }),
+          expect.objectContaining({ userId: editor.userId, role: "editor" }),
+        ]),
+      );
+
+      const editorView = await editor.agent.get("/api/v1/documents");
+      expect(editorView.body.documents[0].role).toBe("editor");
+      expect(editorView.body.documents[0].collaborators).toHaveLength(2);
+    });
   });
 
   describe("GET /api/v1/documents/:id", () => {
@@ -338,6 +362,91 @@ describe("documents routes", () => {
       const res = await owner.agent.delete(
         `/api/v1/documents/${doc.id}/members/${stranger.userId}`,
       );
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("POST /api/v1/documents/:id/transfer-owner", () => {
+    it("transfers ownership to an existing member and demotes the old owner to editor", async () => {
+      const owner = await createUser();
+      const editor = await createUser();
+      const doc = await createDocument(owner.agent);
+      await owner.agent
+        .post(`/api/v1/documents/${doc.id}/invite`)
+        .send({ email: editor.email, role: "editor" });
+
+      const res = await owner.agent
+        .post(`/api/v1/documents/${doc.id}/transfer-owner`)
+        .send({ userId: editor.userId });
+      expect(res.status).toBe(200);
+      expect(res.body.document.ownerId).toBe(editor.userId);
+
+      // New owner can now do owner-only things.
+      const rename = await editor.agent
+        .patch(`/api/v1/documents/${doc.id}`)
+        .send({ title: "Renamed by new owner" });
+      expect(rename.status).toBe(200);
+
+      // Old owner kept editor access instead of losing the document.
+      const oldOwnerView = await owner.agent.get(`/api/v1/documents/${doc.id}`);
+      expect(oldOwnerView.status).toBe(200);
+      const oldOwnerMembership = oldOwnerView.body.members.find(
+        (m: { userId: string }) => m.userId === owner.userId,
+      );
+      expect(oldOwnerMembership).toMatchObject({ role: "editor" });
+
+      // Old owner is no longer owner — owner-only actions now 403 for them.
+      const oldOwnerAttempt = await owner.agent.delete(`/api/v1/documents/${doc.id}`);
+      expect(oldOwnerAttempt.status).toBe(403);
+    });
+
+    it("is owner-only", async () => {
+      const owner = await createUser();
+      const editor = await createUser();
+      const viewer = await createUser();
+      const doc = await createDocument(owner.agent);
+      await owner.agent
+        .post(`/api/v1/documents/${doc.id}/invite`)
+        .send({ email: editor.email, role: "editor" });
+      await owner.agent
+        .post(`/api/v1/documents/${doc.id}/invite`)
+        .send({ email: viewer.email, role: "viewer" });
+
+      const res = await editor.agent
+        .post(`/api/v1/documents/${doc.id}/transfer-owner`)
+        .send({ userId: viewer.userId });
+      expect(res.status).toBe(403);
+    });
+
+    it("400s when the target isn't already a member", async () => {
+      const owner = await createUser();
+      const stranger = await createUser();
+      const doc = await createDocument(owner.agent);
+
+      const res = await owner.agent
+        .post(`/api/v1/documents/${doc.id}/transfer-owner`)
+        .send({ userId: stranger.userId });
+      expect(res.status).toBe(400);
+    });
+
+    it("400s when transferring to the current owner", async () => {
+      const owner = await createUser();
+      const doc = await createDocument(owner.agent);
+
+      const res = await owner.agent
+        .post(`/api/v1/documents/${doc.id}/transfer-owner`)
+        .send({ userId: owner.userId });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 (not 403) for a non-member attempting the transfer", async () => {
+      const owner = await createUser();
+      const stranger = await createUser();
+      const doc = await createDocument(owner.agent);
+
+      const res = await stranger.agent
+        .post(`/api/v1/documents/${doc.id}/transfer-owner`)
+        .send({ userId: owner.userId });
       expect(res.status).toBe(404);
     });
   });

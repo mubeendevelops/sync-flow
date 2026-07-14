@@ -10,4 +10,5 @@ export {
   listOperationsQuerySchema,
   versionParamsSchema,
   listVersionsQuerySchema,
+  transferOwnerBodySchema,
 } from "@sync-flow/schemas";

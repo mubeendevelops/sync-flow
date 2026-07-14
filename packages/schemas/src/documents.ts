@@ -81,13 +81,37 @@ export const paginationSchema = z.object({
   total: z.number().int(),
 });
 
+/** A collaborator on a document — the owner plus every `document_members` row, for the
+ * dashboard's avatar stack. Distinct from `memberSchema`: that one is membership-row-shaped
+ * (has `joinedAt`), this one is just "who has access and at what role". */
+export const collaboratorSchema = z.object({
+  userId: z.uuid(),
+  username: z.string(),
+  displayName: z.string(),
+  presenceColor: z.string(),
+  role: documentRoleSchema,
+});
+export type Collaborator = z.infer<typeof collaboratorSchema>;
+
+/** GET /documents list items carry the requester's own `role` and the full `collaborators` list
+ * (dashboard role badge + avatar stack) — the single-document GET returns `owner`/`members`
+ * separately instead, so this is its own schema rather than reusing `documentSchema`. */
+export const documentListItemSchema = documentSchema.extend({
+  role: documentRoleSchema,
+  collaborators: z.array(collaboratorSchema),
+});
+export type DocumentListItem = z.infer<typeof documentListItemSchema>;
+
 export const listDocumentsResponseSchema = z.object({
-  documents: z.array(documentSchema),
+  documents: z.array(documentListItemSchema),
   pagination: paginationSchema,
 });
 export type ListDocumentsResponse = z.infer<typeof listDocumentsResponseSchema>;
 
-export const createDocumentResponseSchema = z.object({ document: documentSchema });
+/** Shared by every endpoint that just echoes back `{ document }` — create, patch, transfer-owner. */
+export const documentResponseSchema = z.object({ document: documentSchema });
+export const createDocumentResponseSchema = documentResponseSchema;
+export const patchDocumentResponseSchema = documentResponseSchema;
 
 export const getDocumentResponseSchema = z.object({
   document: documentSchema,
@@ -158,3 +182,12 @@ export const restoreResultSchema = z.object({
 });
 
 export const restoreResponseSchema = z.object({ restore: restoreResultSchema });
+
+// ---- owner transfer ---------------------------------------------------------------------
+
+export const transferOwnerBodySchema = z.object({
+  userId: z.uuid(),
+});
+export type TransferOwnerBody = z.infer<typeof transferOwnerBodySchema>;
+
+export const transferOwnerResponseSchema = documentResponseSchema;

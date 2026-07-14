@@ -1,24 +1,25 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
+import { PenLine } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { CollaboratorAvatar } from "@/components/documents/collaborator-avatar";
+import { DocumentGrid } from "@/components/documents/document-grid";
+import { DocumentCardSkeleton } from "@/components/documents/document-card-skeleton";
 import { useRequireAuth } from "@/hooks/use-auth";
 
-// Placeholder — the real document dashboard (list/create/rename/delete/share) lands next.
-// This exists so the auth flow (login → protected route → refresh → logout) has somewhere to land.
 export default function DocumentsPage() {
   const { user, isLoading, logout } = useRequireAuth();
   const router = useRouter();
-
-  if (isLoading || !user) {
-    return (
-      <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
-        <Skeleton className="h-8 w-48" />
-        <Skeleton className="h-4 w-64" />
-      </div>
-    );
-  }
 
   async function handleLogout() {
     await logout();
@@ -26,12 +27,48 @@ export default function DocumentsPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
-      <h1 className="text-2xl font-semibold text-foreground">Welcome, {user.displayName}</h1>
-      <p className="text-muted-foreground">Your documents will show up here.</p>
-      <Button variant="outline" className="w-fit" onClick={handleLogout}>
-        Log out
-      </Button>
+    <div className="flex min-h-screen flex-col">
+      <header className="flex items-center justify-between border-b border-border px-6 py-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <PenLine className="h-5 w-5 text-primary" />
+          SyncFlow
+        </div>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          {isLoading || !user ? (
+            <Skeleton className="h-8 w-8 rounded-full" />
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                <CollaboratorAvatar
+                  displayName={user.displayName}
+                  presenceColor={user.presenceColor}
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel className="font-normal text-muted-foreground">
+                  {user.email}
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={handleLogout}>Log out</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+      </header>
+
+      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
+        <h1 className="mb-6 text-2xl font-semibold text-foreground">Your documents</h1>
+        {isLoading || !user ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }, (_, i) => (
+              <DocumentCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : (
+          <DocumentGrid />
+        )}
+      </main>
     </div>
   );
 }

@@ -14,6 +14,7 @@ import {
   listOperationsQuerySchema,
   versionParamsSchema,
   listVersionsQuerySchema,
+  transferOwnerBodySchema,
 } from "../documents/schemas.js";
 import { listVersions, type VersionListItem } from "../documents/versions.repo.js";
 import {
@@ -24,15 +25,20 @@ import {
 import type { DocumentStore } from "../crdt-service/index.js";
 import {
   listAccessibleDocuments,
+  listCollaborators,
   createDocumentWithInitialSnapshot,
   updateDocument,
   softDeleteDocument,
   getLatestSnapshotSeq,
   listMembersWithUsers,
+  findMember,
   upsertMember,
   removeMember,
+  transferOwnership,
   listOperations,
   type DocumentRecord,
+  type AccessibleDocument,
+  type Collaborator,
   type MemberWithUser,
   type OperationRecord,
 } from "../documents/documents.repo.js";
@@ -86,6 +92,24 @@ function toDocumentDto(doc: DocumentRecord) {
   };
 }
 
+function toCollaboratorDto(c: Collaborator) {
+  return {
+    userId: c.user_id,
+    username: c.username,
+    displayName: c.display_name,
+    presenceColor: c.presence_color,
+    role: c.role,
+  };
+}
+
+function toDocumentListItemDto(doc: AccessibleDocument, collaborators: Collaborator[]) {
+  return {
+    ...toDocumentDto(doc),
+    role: doc.role,
+    collaborators: collaborators.map(toCollaboratorDto),
+  };
+}
+
 function toMemberDto(member: MemberWithUser) {
   return {
     userId: member.user_id,
@@ -125,8 +149,14 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
         page,
         pageSize,
       });
+      const collaboratorsByDoc = await listCollaborators(
+        deps.db,
+        documents.map((d) => d.id),
+      );
       res.status(200).json({
-        documents: documents.map(toDocumentDto),
+        documents: documents.map((doc) =>
+          toDocumentListItemDto(doc, collaboratorsByDoc.get(doc.id) ?? []),
+        ),
         pagination: { page, pageSize, total },
       });
     } catch (err) {
@@ -247,6 +277,40 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
           return;
         }
         res.status(204).send();
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // Owner-only. The target must already be a member (editor or viewer) — this is reachable
+  // only by promoting someone already in the share dialog's member list, never an arbitrary
+  // user, which keeps "who can end up owning my document" bounded to people I already invited.
+  router.post(
+    "/:id/transfer-owner",
+    validate({ params: documentIdParamsSchema, body: transferOwnerBodySchema }),
+    async (req, res, next) => {
+      try {
+        const { id } = req.params as unknown as { id: string };
+        const { userId: newOwnerId } = req.body as { userId: string };
+        const { document } = await assertCanAccess(deps.db, req.user!.id, id, "owner");
+
+        if (newOwnerId === document.owner_id) {
+          next(AppError.badRequest("This user already owns the document"));
+          return;
+        }
+        const targetMember = await findMember(deps.db, id, newOwnerId);
+        if (!targetMember) {
+          next(AppError.badRequest("User must already be a collaborator on this document"));
+          return;
+        }
+
+        const updated = await transferOwnership(deps.db, id, newOwnerId, req.user!.id);
+        if (!updated) {
+          next(AppError.conflict("Ownership changed concurrently — please retry"));
+          return;
+        }
+        res.status(200).json({ document: toDocumentDto(updated) });
       } catch (err) {
         next(err);
       }

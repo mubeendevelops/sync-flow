@@ -34,24 +34,86 @@ export interface ListAccessibleDocumentsInput {
   pageSize: number;
 }
 
+/** Owner or member role on a specific document — "owner" is derived from `documents.owner_id`,
+ * never stored as a `document_members` row (see permissions.ts's `assertCanAccess`). */
+export type DocumentAccessRole = "owner" | MemberRole;
+
+export interface AccessibleDocument extends DocumentRecord {
+  role: DocumentAccessRole;
+}
+
 export async function listAccessibleDocuments(
   db: DbClient,
   input: ListAccessibleDocumentsInput,
-): Promise<{ documents: DocumentRecord[]; total: number }> {
+): Promise<{ documents: AccessibleDocument[]; total: number }> {
   const offset = (input.page - 1) * input.pageSize;
-  const { rows } = await db.query<DocumentRecord & { total_count: string }>(
-    `SELECT d.*, COUNT(*) OVER() AS total_count
+  // LEFT JOIN (rather than the old EXISTS) so the requester's role comes back for free — a doc
+  // only ever matches the WHERE clause via ownership or exactly one membership row, so this
+  // can't duplicate rows.
+  const { rows } = await db.query<
+    DocumentRecord & { role: DocumentAccessRole; total_count: string }
+  >(
+    `SELECT d.*,
+            CASE WHEN d.owner_id = $1 THEN 'owner' ELSE m.role::text END AS role,
+            COUNT(*) OVER() AS total_count
      FROM documents d
+     LEFT JOIN document_members m ON m.document_id = d.id AND m.user_id = $1
      WHERE d.deleted_at IS NULL
-       AND (d.owner_id = $1 OR EXISTS (
-         SELECT 1 FROM document_members m WHERE m.document_id = d.id AND m.user_id = $1
-       ))
+       AND (d.owner_id = $1 OR m.user_id = $1)
      ORDER BY d.updated_at DESC
      LIMIT $2 OFFSET $3`,
     [input.userId, input.pageSize, offset],
   );
   const total = rows.length > 0 ? Number(rows[0].total_count) : 0;
   return { documents: rows.map(({ total_count: _total_count, ...doc }) => doc), total };
+}
+
+export interface Collaborator {
+  document_id: string;
+  user_id: string;
+  role: DocumentAccessRole;
+  username: string;
+  display_name: string;
+  presence_color: string;
+}
+
+/**
+ * Batched owner+members lookup for a page of documents' avatar stacks — one query for owners,
+ * one for members, grouped in JS, instead of N+1 per-document queries.
+ */
+export async function listCollaborators(
+  db: DbClient,
+  documentIds: string[],
+): Promise<Map<string, Collaborator[]>> {
+  const byDocument = new Map<string, Collaborator[]>();
+  if (documentIds.length === 0) return byDocument;
+
+  const [{ rows: owners }, { rows: members }] = await Promise.all([
+    db.query<Collaborator>(
+      `SELECT d.id AS document_id, u.id AS user_id, 'owner' AS role,
+              u.username, u.display_name, u.presence_color
+       FROM documents d
+       JOIN users u ON u.id = d.owner_id
+       WHERE d.id = ANY($1)`,
+      [documentIds],
+    ),
+    db.query<Collaborator>(
+      `SELECT m.document_id, u.id AS user_id, m.role,
+              u.username, u.display_name, u.presence_color
+       FROM document_members m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.document_id = ANY($1)
+       ORDER BY m.created_at ASC`,
+      [documentIds],
+    ),
+  ]);
+
+  for (const row of [...owners, ...members]) {
+    const existing = byDocument.get(row.document_id);
+    if (existing) existing.push(row);
+    else byDocument.set(row.document_id, [row]);
+  }
+  return byDocument;
 }
 
 export interface CreateDocumentInput {
@@ -185,6 +247,47 @@ export async function removeMember(
     [documentId, userId],
   );
   return rows.length > 0;
+}
+
+/**
+ * Transfers ownership to an existing member. `DbClient` exposes only a single `query()` (no
+ * dedicated connection to BEGIN/COMMIT on — see db/types.ts), so this is one statement built
+ * from three data-modifying CTEs, atomic by virtue of being one round-trip: the owner_id update
+ * is gated on the caller still being the current owner (`WHERE owner_id = $3`), and the
+ * member-table changes are gated on that update having actually matched a row, so a lost
+ * ownership race leaves everything untouched instead of partially applying.
+ * The old owner keeps `editor` access as a member row instead of losing the document outright;
+ * the new owner's membership row is removed since ownership now lives in `documents.owner_id`,
+ * not `document_members` (consistent with how `assertCanAccess` computes "owner").
+ */
+export async function transferOwnership(
+  db: DbClient,
+  documentId: string,
+  newOwnerId: string,
+  currentOwnerId: string,
+): Promise<DocumentRecord | null> {
+  const { rows } = await db.query<DocumentRecord>(
+    `WITH updated_doc AS (
+       UPDATE documents
+       SET owner_id = $2, updated_at = now()
+       WHERE id = $1 AND owner_id = $3
+       RETURNING ${DOCUMENT_COLUMNS}
+     ),
+     removed_member AS (
+       DELETE FROM document_members
+       WHERE document_id IN (SELECT id FROM updated_doc) AND user_id = $2
+       RETURNING document_id
+     ),
+     old_owner_membership AS (
+       INSERT INTO document_members (document_id, user_id, role)
+       SELECT id, $3, 'editor' FROM updated_doc
+       ON CONFLICT (document_id, user_id) DO UPDATE SET role = 'editor', updated_at = now()
+       RETURNING document_id
+     )
+     SELECT * FROM updated_doc`,
+    [documentId, newOwnerId, currentOwnerId],
+  );
+  return rows[0] ?? null;
 }
 
 export interface OperationRecord {

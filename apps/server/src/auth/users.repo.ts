@@ -40,6 +40,26 @@ export async function findUserById(db: DbClient, id: string): Promise<UserRecord
   return rows[0] ?? null;
 }
 
+export interface SearchUsersInput {
+  query: string;
+  /** Excluded from results — the share dialog's autocomplete is for inviting *other* people. */
+  excludeUserId: string;
+  limit: number;
+}
+
+/** Backs the share dialog's add-member autocomplete (GET /api/v1/users/search?q=). */
+export async function searchUsers(db: DbClient, input: SearchUsersInput): Promise<UserRecord[]> {
+  const { rows } = await db.query<UserRecord>(
+    `SELECT ${USER_COLUMNS} FROM users
+     WHERE id != $1
+       AND (username ILIKE $2 OR display_name ILIKE $2 OR email ILIKE $2)
+     ORDER BY username ASC
+     LIMIT $3`,
+    [input.excludeUserId, `%${input.query}%`, input.limit],
+  );
+  return rows;
+}
+
 export interface CreateUserInput {
   id: string;
   username: string;

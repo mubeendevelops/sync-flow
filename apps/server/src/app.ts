@@ -9,6 +9,7 @@ import type { CacheClient } from "./cache/types.js";
 import { createHealthRouter } from "./routes/health.js";
 import { createAuthRouter, type AuthRouterDeps } from "./routes/auth.js";
 import { createDocumentsRouter, type DocumentsRestoreDeps } from "./routes/documents.js";
+import { createUsersRouter } from "./routes/users.js";
 import { notFoundHandler } from "./middleware/not-found.js";
 import { errorHandler } from "./middleware/error-handler.js";
 
@@ -64,6 +65,10 @@ export function createApp(deps: AppDeps): Express {
       jwtAccessSecret: deps.auth.jwtAccessSecret,
       restore: deps.restore,
     }),
+  );
+  app.use(
+    "/api/v1/users",
+    createUsersRouter({ db: deps.db, jwtAccessSecret: deps.auth.jwtAccessSecret }),
   );
 
   app.use(notFoundHandler);
