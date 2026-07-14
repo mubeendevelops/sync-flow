@@ -359,4 +359,76 @@ describe("real-time socket layer", () => {
     b.disconnect();
     expect((await left).userId).toBe(editorId);
   });
+
+  it("does not announce user_left while another tab for the same user is still connected", async () => {
+    const { ownerId, documentId } = await seedOwnerDoc();
+    const editorId = await addCollaborator(documentId, "editor");
+
+    const observer = await connect(editorId);
+    await emit(observer, "join", { documentId });
+
+    const tabA = await connect(ownerId);
+    const tabB = await connect(ownerId);
+    await emit(tabA, "join", { documentId });
+    await emit(tabB, "join", { documentId });
+
+    const leftEvents: { userId: string }[] = [];
+    observer.on("user_left", (p: { userId: string }) => leftEvents.push(p));
+
+    tabA.disconnect();
+    await sleep(150);
+    expect(leftEvents).toHaveLength(0); // tab B is still open — the user hasn't left
+
+    const left = new Promise<{ userId: string }>((resolve) => observer.on("user_left", resolve));
+    tabB.disconnect();
+    expect((await left).userId).toBe(ownerId); // last tab closed — now they've really left
+  });
+
+  // ---- presence heartbeat --------------------------------------------------
+
+  it("refreshes presence TTL on a heartbeat, independent of edit/cursor activity", async () => {
+    let expireCalls = 0;
+    const base = makeFakeCache();
+    const countingCache: CrdtStateCache & PresenceCache = {
+      ...base,
+      expire: async (key, seconds) => {
+        expireCalls += 1;
+        return base.expire(key, seconds);
+      },
+    };
+
+    const hbHttpServer = createServer();
+    const hbServer = createSocketServer(hbHttpServer, {
+      corsOrigin: "http://localhost:3000",
+      jwtAccessSecret: JWT_SECRET,
+      db: pool,
+      cache: countingCache,
+      logger: pino({ level: "silent" }),
+      heartbeatIntervalMs: 30,
+    });
+    await new Promise<void>((resolve) => hbHttpServer.listen(0, "localhost", () => resolve()));
+    const hbUrl = `http://localhost:${(hbHttpServer.address() as AddressInfo).port}`;
+
+    try {
+      const { ownerId, documentId } = await seedOwnerDoc();
+      const socket = ioClient(hbUrl, {
+        reconnection: false,
+        transports: ["websocket"],
+        extraHeaders: { Cookie: cookieFor(ownerId) },
+      });
+      clients.push(socket);
+      await new Promise<void>((resolve, reject) => {
+        socket.on("connect", () => resolve());
+        socket.on("connect_error", (err) => reject(err));
+      });
+      await emit(socket, "join", { documentId });
+
+      expireCalls = 0; // drop the count from join's own setPresence
+      await sleep(150); // ~5 heartbeat ticks at 30ms, zero edits/cursor moves
+
+      expect(expireCalls).toBeGreaterThanOrEqual(2);
+    } finally {
+      await new Promise<void>((resolve) => hbServer.io.close(() => resolve()));
+    }
+  });
 });

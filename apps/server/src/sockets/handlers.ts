@@ -65,6 +65,13 @@ export interface DocHandlerDeps {
   readonly syncThreshold?: number;
   /** Cross-instance peer-apply relay; omit for a single-instance/in-memory setup. */
   readonly peerRelay?: PeerOpRelay;
+  /**
+   * How often a joined socket refreshes its document's presence TTL purely by being
+   * connected, independent of edit/cursor activity. Default 20s (see
+   * `DEFAULT_HEARTBEAT_INTERVAL_MS` — a third of `PRESENCE_TTL_SECONDS`, so at least
+   * two heartbeats are missed before a live-but-idle viewer would ever expire).
+   */
+  readonly heartbeatIntervalMs?: number;
 }
 
 /**
@@ -81,6 +88,19 @@ export interface DocHandlerDeps {
  */
 const DEFAULT_SYNC_THRESHOLD = 500;
 const MAX_CURSOR_ID_LEN = 64;
+
+/**
+ * Presence TTL (`PRESENCE_TTL_SECONDS`, 60s) is a dead-man's switch on the whole
+ * per-document Redis hash, refreshed today only by activity (`touchPresence` on
+ * edit, `setPresence` on cursor move). A connected-but-idle participant — someone
+ * who just has the doc open and is reading, not typing or moving their cursor —
+ * would silently fall out of presence after 60s even though their socket is still
+ * open. A per-connection heartbeat, independent of activity, closes that gap: as
+ * long as ANY joined socket is alive, the hash stays alive. 20s = a third of the
+ * TTL, so at least two heartbeats can be missed (a slow tick, a GC pause) before
+ * a live connection would ever expire.
+ */
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 20_000;
 
 const documentIdSchema = z.uuid();
 const cursorPayloadSchema = z.object({
@@ -104,10 +124,26 @@ async function getUserPresenceInfo(
 export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): void {
   const { db, manager, presence, logger, peerRelay } = deps;
   const syncThreshold = deps.syncThreshold ?? DEFAULT_SYNC_THRESHOLD;
+  const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
 
   // Per-socket state, established on `join`.
   let store: DocumentStore | null = null;
   let presenceUser: PresenceUser | null = null;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+  function startHeartbeat(documentId: string): void {
+    heartbeat = setInterval(() => {
+      void touchPresence(presence, documentId).catch((err: unknown) =>
+        logger?.error({ err, documentId }, "presence heartbeat failed"),
+      );
+    }, heartbeatIntervalMs);
+    heartbeat.unref?.();
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = null;
+  }
 
   socket.on("join", (payload: JoinPayload, ack: Ack<JoinResult>) => {
     void handleJoin(payload, ack);
@@ -153,6 +189,7 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
       };
       await setPresence(presence, documentId, socket.id, presenceUser);
       socket.to(documentId).emit("user_joined", presenceUser);
+      startHeartbeat(documentId);
 
       const users = await listPresence(presence, documentId);
       ack({
@@ -286,9 +323,19 @@ export function registerDocHandlers(socket: DocSocket, deps: DocHandlerDeps): vo
   async function handleDisconnect(): Promise<void> {
     const documentId = socket.data.documentId;
     if (!documentId) return;
+    stopHeartbeat();
     try {
       await removePresence(presence, documentId, socket.id);
-      socket.to(documentId).emit("user_left", { userId: socket.data.user.id });
+      // The same user may have the document open in another tab (a separate socket,
+      // its own presence entry keyed by socket id). Only announce a real departure
+      // once every one of their sessions on this document is gone — otherwise
+      // closing tab A would wrongly tell everyone the user left while tab B is
+      // still there, editing.
+      const remaining = await listPresence(presence, documentId);
+      const stillPresent = remaining.some((u) => u.userId === socket.data.user.id);
+      if (!stillPresent) {
+        socket.to(documentId).emit("user_left", { userId: socket.data.user.id });
+      }
     } catch (err) {
       logger?.error({ err, documentId }, "presence cleanup failed on disconnect");
     } finally {

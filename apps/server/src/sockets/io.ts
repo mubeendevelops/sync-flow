@@ -27,6 +27,8 @@ export interface SocketServerDeps {
   readonly adapter?: ReturnType<typeof createAdapter>;
   readonly rate?: TokenBucketOptions;
   readonly syncThreshold?: number;
+  /** Presence heartbeat cadence (ms); see `handlers.ts` `DEFAULT_HEARTBEAT_INTERVAL_MS`. */
+  readonly heartbeatIntervalMs?: number;
   /** Pre-built room manager to share with a peer-apply relay; built internally if omitted. */
   readonly manager?: DocumentRoomManager;
   /** Cross-instance peer-apply relay for the server-side materialized CRDT copy (see peer-relay.ts). */
@@ -88,6 +90,7 @@ export function createSocketServer(httpServer: HttpServer, deps: SocketServerDep
       logger: deps.logger,
       syncThreshold: deps.syncThreshold,
       peerRelay: deps.peerRelay,
+      heartbeatIntervalMs: deps.heartbeatIntervalMs,
     });
   });
 
