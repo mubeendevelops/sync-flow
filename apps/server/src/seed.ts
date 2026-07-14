@@ -11,6 +11,16 @@ const USERS = [
   { username: "carol", email: "carol@example.com", displayName: "Carol Chen" },
 ] as const;
 
+// Must match apps/web/src/lib/demo-credentials.ts — the "Try the demo" button on /login.
+// Doesn't need to satisfy signupBodySchema's password-strength rules: it's inserted directly,
+// never through POST /signup.
+const DEMO_USER = {
+  username: "demo",
+  email: "demo@syncflow.io",
+  displayName: "Demo User",
+} as const;
+const DEMO_PASSWORD = "demo1234";
+
 async function main() {
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
   const client = await pool.connect();
@@ -22,7 +32,9 @@ async function main() {
     await client.query("DELETE FROM documents WHERE title = ANY($1)", [
       ["Product Roadmap Q3", "Engineering Onboarding Guide"],
     ]);
-    await client.query("DELETE FROM users WHERE email = ANY($1)", [USERS.map((u) => u.email)]);
+    await client.query("DELETE FROM users WHERE email = ANY($1)", [
+      [...USERS.map((u) => u.email), DEMO_USER.email],
+    ]);
 
     const passwordHash = await argon2.hash(DEV_PASSWORD);
 
@@ -37,6 +49,25 @@ async function main() {
         [id, user.username, user.email, passwordHash, user.displayName, presenceColor],
       );
       userIds[user.email] = rows[0].id;
+    }
+
+    {
+      const demoPasswordHash = await argon2.hash(DEMO_PASSWORD);
+      const id = crypto.randomUUID();
+      const presenceColor = assignPresenceColor(id);
+      await client.query(
+        `INSERT INTO users (id, username, email, password_hash, display_name, presence_color)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          id,
+          DEMO_USER.username,
+          DEMO_USER.email,
+          demoPasswordHash,
+          DEMO_USER.displayName,
+          presenceColor,
+        ],
+      );
+      userIds[DEMO_USER.email] = id;
     }
 
     const { rows: doc1Rows } = await client.query<{ id: string }>(
@@ -68,11 +99,14 @@ async function main() {
 
     await client.query("COMMIT");
 
-    console.log("Seeded 3 users, 2 documents, 4 membership rows.");
-    console.log(`Dev password for all seed users: ${DEV_PASSWORD}`);
+    console.log("Seeded 4 users, 2 documents, 4 membership rows.");
+    console.log(`Dev password for alice/bob/carol: ${DEV_PASSWORD}`);
     for (const user of USERS) {
       console.log(`  ${user.displayName} <${user.email}> — id ${userIds[user.email]}`);
     }
+    console.log(
+      `Demo login (also wired to the "Try the demo" button): ${DEMO_USER.email} / ${DEMO_PASSWORD}`,
+    );
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

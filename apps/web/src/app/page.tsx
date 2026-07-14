@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { PenLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -27,9 +28,11 @@ export default function HomePage() {
             no Yjs, no Automerge. Sign in to start writing.
           </p>
           <div className="mt-8 flex justify-center gap-3">
-            <Button size="lg">Get started</Button>
-            <Button size="lg" variant="outline">
-              Sign in
+            <Button size="lg" asChild>
+              <Link href="/register">Get started</Link>
+            </Button>
+            <Button size="lg" variant="outline" asChild>
+              <Link href="/login">Sign in</Link>
             </Button>
           </div>
         </div>
