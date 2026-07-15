@@ -77,3 +77,55 @@
     @apply bg-background text-foreground font-sans antialiased;
   }
 }
+
+/* Remote collaborators' carets + selections, painted as decorations by lib/remote-cursors.ts.
+   The caret is a zero-width inline marker carrying a 2px colored vertical bar and a name label
+   that fades after 2.5s of inactivity (and reappears when the widget DOM is rebuilt on move). */
+.remote-caret {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  margin-left: -1px;
+  border-left: 2px solid var(--remote-caret-color, #888);
+  pointer-events: none;
+  vertical-align: text-bottom;
+  word-break: normal;
+}
+
+.remote-caret__label {
+  position: absolute;
+  bottom: 100%;
+  left: -1px;
+  white-space: nowrap;
+  border-radius: 0.25rem 0.25rem 0.25rem 0;
+  padding: 0 0.35rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  font-weight: 500;
+  color: #fff;
+  background: var(--remote-caret-color, #888);
+  user-select: none;
+  pointer-events: none;
+  /* Visible on mount, then fades out after a 2.5s hold. A fresh widget (on the peer's next
+     move) restarts this animation, so the label pops back into view. */
+  animation: remote-caret-label-fade 300ms ease 2.5s forwards;
+}
+
+@keyframes remote-caret-label-fade {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-caret__label {
+    animation: none;
+  }
+}
+
+/* Translucent 30% wash of the peer's color over their selection range. color-mix keeps it
+   readable in both themes and works for any CSS color the server hands us. */
+.remote-selection {
+  background-color: color-mix(in srgb, var(--remote-caret-color, #888) 30%, transparent);
+  border-radius: 0.125rem;
+}

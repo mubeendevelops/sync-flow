@@ -2,35 +2,108 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Share2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, History, Loader2, Share2, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CollaboratorAvatarStack } from "@/components/documents/collaborator-avatar-stack";
+import { PresenceAvatarStack } from "@/components/documents/presence-avatar-stack";
 import { ShareDialog } from "@/components/documents/share-dialog";
-import type { Collaborator } from "@sync-flow/schemas";
+import { VersionHistoryPanel } from "@/components/documents/version-history-panel";
+import { toSavedState, type SavedState } from "@/lib/connection-status";
+import type { ConnectionState, PresenceUser } from "@/lib/websocket";
+import { cn } from "@/lib/utils";
+
+const SAVED_STATE_CONFIG: Record<
+  SavedState,
+  { label: string; icon: typeof CheckCircle2; spin?: boolean; className: string }
+> = {
+  saved: {
+    label: "Saved",
+    icon: CheckCircle2,
+    className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  },
+  saving: {
+    label: "Saving…",
+    icon: Loader2,
+    spin: true,
+    className: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  },
+  reconnecting: {
+    label: "Reconnecting…",
+    icon: Loader2,
+    spin: true,
+    className: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  },
+  offline: {
+    label: "Offline — edits saved locally",
+    icon: WifiOff,
+    className: "bg-destructive/10 text-destructive",
+  },
+};
+
+/** The header's connection/save pill — exactly the four states from CLAUDE.md's polish spec,
+ * announced via `role="status"` so a screen reader hears every transition. */
+function ConnectionPill({
+  connectionState,
+  isSaving,
+}: {
+  connectionState: ConnectionState;
+  isSaving: boolean;
+}) {
+  const state = toSavedState(connectionState, isSaving);
+  const { label, icon: Icon, spin, className } = SAVED_STATE_CONFIG[state];
+
+  return (
+    <span
+      role="status"
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
+        className,
+      )}
+    >
+      <Icon aria-hidden className={cn("h-3.5 w-3.5 shrink-0", spin && "animate-spin")} />
+      {/* The full copy (e.g. "Offline — edits saved locally") is always in the DOM for screen
+          readers; visually it's clipped on narrow viewports so the header doesn't overflow. */}
+      <span className="max-w-[72px] truncate sm:max-w-none">{label}</span>
+    </span>
+  );
+}
 
 export interface DocumentHeaderProps {
   documentId: string;
   title: string | null;
-  collaborators: Collaborator[];
+  connectionState: ConnectionState;
+  /** True while at least one edit ack is outstanding. */
+  isSaving: boolean;
+  /** Users currently in the document (live presence), for the avatar stack. */
+  activeUsers: PresenceUser[];
+  /** Latest "X joined" text, announced to screen readers via `aria-live="polite"`. */
+  joinAnnouncement?: string;
+  /** The viewing user's id, so their own presence row is marked "you". */
+  selfId?: string;
   canEditTitle: boolean;
+  /** Only the owner can restore a version — gates the restore button in the history panel. */
+  isOwner: boolean;
   onTitleCommit: (title: string) => void;
 }
 
 /**
- * Sticky editor header: back nav, editable title, connection pill, collaborator avatars, share.
- * Connection state is hardcoded "Saved" for now — Prompt 19 wires it to the real WebSocket state
- * in `useDocumentStore.connectionState`.
+ * Sticky editor header: back nav, editable title, connection pill, live-presence avatars, share.
  */
 export function DocumentHeader({
   documentId,
   title,
-  collaborators,
+  connectionState,
+  isSaving,
+  activeUsers,
+  joinAnnouncement,
+  selfId,
   canEditTitle,
+  isOwner,
   onTitleCommit,
 }: DocumentHeaderProps) {
   const router = useRouter();
   const [shareOpen, setShareOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const lastCommittedTitle = useRef(title);
 
@@ -67,10 +140,17 @@ export function DocumentHeader({
 
   return (
     <>
-      <header className="sticky top-0 z-20 flex h-[65px] items-center gap-3 border-b border-border bg-background px-4">
+      {/* Screen-reader-only companion to the "X joined" toast — sighted users get the toast,
+          everyone else gets this polite live-region announcement. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {joinAnnouncement}
+      </div>
+
+      <header className="sticky top-0 z-20 flex h-[65px] items-center gap-1.5 border-b border-border bg-background px-2 sm:gap-3 sm:px-4">
         <Button
           variant="ghost"
           size="icon"
+          className="shrink-0"
           aria-label="Back to documents"
           onClick={() => router.push("/documents")}
         >
@@ -92,21 +172,30 @@ export function DocumentHeader({
           </h1>
         )}
 
-        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-          Saved
-        </span>
+        <ConnectionPill connectionState={connectionState} isSaving={isSaving} />
 
-        <CollaboratorAvatarStack collaborators={collaborators} />
+        <PresenceAvatarStack users={activeUsers} selfId={selfId} />
 
         <Button
           variant="outline"
           size="sm"
-          className="shrink-0 gap-1.5"
+          aria-label="History"
+          className="shrink-0 gap-1.5 px-2 sm:px-3"
+          onClick={() => setHistoryOpen(true)}
+        >
+          <History className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">History</span>
+        </Button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Share"
+          className="shrink-0 gap-1.5 px-2 sm:px-3"
           onClick={() => setShareOpen(true)}
         >
           <Share2 className="h-3.5 w-3.5" />
-          Share
+          <span className="hidden sm:inline">Share</span>
         </Button>
       </header>
 
@@ -115,6 +204,13 @@ export function DocumentHeader({
         documentTitle={title ?? ""}
         open={shareOpen}
         onOpenChange={setShareOpen}
+      />
+
+      <VersionHistoryPanel
+        documentId={documentId}
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        canRestore={isOwner}
       />
     </>
   );

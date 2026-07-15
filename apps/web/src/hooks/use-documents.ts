@@ -13,7 +13,9 @@ import {
   listDocumentsResponseSchema,
   patchDocumentResponseSchema,
   type CreateDocumentBody,
+  type Document,
   type DocumentListItem,
+  type GetDocumentResponse,
   type ListDocumentsResponse,
   type PatchDocumentBody,
 } from "@sync-flow/schemas";
@@ -21,6 +23,10 @@ import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
 
 export const DOCUMENTS_LIST_QUERY_KEY = ["documents", "list"] as const;
+
+export function documentDetailQueryKey(documentId: string) {
+  return ["documents", "detail", documentId] as const;
+}
 
 const PAGE_SIZE = 20;
 
@@ -30,7 +36,7 @@ export interface OptimisticDocumentListItem extends DocumentListItem {
   pending?: boolean;
 }
 
-type DocumentsPages = InfiniteData<ListDocumentsResponse, number>;
+export type DocumentsPages = InfiniteData<ListDocumentsResponse, number>;
 
 export function useDocumentsInfinite() {
   return useInfiniteQuery({
@@ -56,6 +62,24 @@ function withFirstPagePatched(
   if (!data || !firstPage) return data;
   const [, ...rest] = data.pages;
   return { ...data, pages: [{ ...firstPage, documents: patch(firstPage.documents) }, ...rest] };
+}
+
+/** Unlike {@link withFirstPagePatched} (which only ever inserts onto page 0), a rename/patch can
+ * target a document sitting on any loaded page — so this walks every page's document list.
+ * Exported for the sharing hooks, which patch a doc's `collaborators` the same way. */
+export function withDocumentPatched(
+  data: DocumentsPages | undefined,
+  documentId: string,
+  patch: (doc: OptimisticDocumentListItem) => OptimisticDocumentListItem,
+): DocumentsPages | undefined {
+  if (!data) return data;
+  return {
+    ...data,
+    pages: data.pages.map((page) => ({
+      ...page,
+      documents: page.documents.map((doc) => (doc.id === documentId ? patch(doc) : doc)),
+    })),
+  };
 }
 
 /** Optimistic: an in-flight placeholder card appears immediately; on success the caller
@@ -129,33 +153,56 @@ export function useCreateDocumentAndNavigate() {
   };
 }
 
+interface PatchDocumentContext {
+  previousList: DocumentsPages | undefined;
+  previousDetail: GetDocumentResponse | undefined;
+}
+
 /** Rename and/or toggle-public. Used by the card's inline title editor (debounced by the
- * caller) and, later, the editor header. */
+ * caller) and the editor header's title field. Optimistic: both the dashboard list cache and
+ * this document's detail cache are patched immediately; a failure rolls both back and toasts. */
 export function usePatchDocument(documentId: string) {
   const queryClient = useQueryClient();
+  const detailKey = documentDetailQueryKey(documentId);
 
-  return useMutation({
+  return useMutation<{ document: Document }, unknown, PatchDocumentBody, PatchDocumentContext>({
     mutationFn: (body: PatchDocumentBody) =>
       apiClient.patch(`/api/v1/documents/${documentId}`, {
         body,
         responseSchema: patchDocumentResponseSchema,
       }),
-    onSuccess: ({ document }) => {
-      queryClient.setQueryData<DocumentsPages>(DOCUMENTS_LIST_QUERY_KEY, (old) => {
-        if (!old) return old;
-        return {
-          ...old,
-          pages: old.pages.map((page) => ({
-            ...page,
-            documents: page.documents.map((doc) =>
-              doc.id === documentId ? { ...doc, ...document } : doc,
-            ),
-          })),
-        };
-      });
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: DOCUMENTS_LIST_QUERY_KEY });
+      await queryClient.cancelQueries({ queryKey: detailKey });
+
+      const previousList = queryClient.getQueryData<DocumentsPages>(DOCUMENTS_LIST_QUERY_KEY);
+      const previousDetail = queryClient.getQueryData<GetDocumentResponse>(detailKey);
+
+      queryClient.setQueryData<DocumentsPages>(DOCUMENTS_LIST_QUERY_KEY, (old) =>
+        withDocumentPatched(old, documentId, (doc) => ({ ...doc, ...body })),
+      );
+      queryClient.setQueryData<GetDocumentResponse>(detailKey, (old) =>
+        old ? { ...old, document: { ...old.document, ...body } } : old,
+      );
+
+      return { previousList, previousDetail };
     },
-    onError: () => {
+    onError: (_err, _body, context) => {
+      if (context?.previousList) {
+        queryClient.setQueryData(DOCUMENTS_LIST_QUERY_KEY, context.previousList);
+      }
+      if (context?.previousDetail) {
+        queryClient.setQueryData(detailKey, context.previousDetail);
+      }
       toast.error("Couldn't save that change. Please try again.");
+    },
+    onSuccess: ({ document }) => {
+      queryClient.setQueryData<DocumentsPages>(DOCUMENTS_LIST_QUERY_KEY, (old) =>
+        withDocumentPatched(old, documentId, (doc) => ({ ...doc, ...document })),
+      );
+      queryClient.setQueryData<GetDocumentResponse>(detailKey, (old) =>
+        old ? { ...old, document } : old,
+      );
     },
   });
 }

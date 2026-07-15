@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { X } from "lucide-react";
+import { AlertCircle, X } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -38,7 +38,7 @@ import {
 } from "@/hooks/use-document-sharing";
 import { useUserSearch } from "@/hooks/use-user-search";
 import { useAuthStore } from "@/stores/auth-store";
-import type { PublicUser } from "@sync-flow/schemas";
+import { ApiError, type PublicUser } from "@sync-flow/schemas";
 
 export interface ShareDialogProps {
   documentId: string;
@@ -49,7 +49,7 @@ export interface ShareDialogProps {
 
 export function ShareDialog({ documentId, documentTitle, open, onOpenChange }: ShareDialogProps) {
   const currentUser = useAuthStore((s) => s.user);
-  const { data, isLoading } = useDocumentDetail(documentId, open);
+  const { data, isLoading, isError, error, refetch } = useDocumentDetail(documentId, open);
   const inviteMember = useInviteMember(documentId);
   const removeMember = useRemoveMember(documentId);
   const transferOwnership = useTransferOwnership(documentId);
@@ -67,10 +67,7 @@ export function ShareDialog({ documentId, documentTitle, open, onOpenChange }: S
   const availableResults = searchResults.filter((u) => !existingIds.has(u.id));
 
   function handleInvite(user: PublicUser) {
-    inviteMember.mutate(
-      { email: user.email, role: inviteRole },
-      { onSuccess: () => setSearchInput("") },
-    );
+    inviteMember.mutate({ user, role: inviteRole }, { onSuccess: () => setSearchInput("") });
   }
 
   return (
@@ -136,6 +133,20 @@ export function ShareDialog({ documentId, documentTitle, open, onOpenChange }: S
               <div className="space-y-3 py-2">
                 <Skeleton className="h-10 w-full" />
                 <Skeleton className="h-10 w-full" />
+              </div>
+            )}
+
+            {isError && (
+              <div className="flex flex-col items-center gap-3 py-6 text-center">
+                <AlertCircle className="h-6 w-6 text-destructive" />
+                <p className="text-sm text-muted-foreground">
+                  {error instanceof ApiError
+                    ? (error.detail ?? error.title)
+                    : "Couldn't load who has access to this document."}
+                </p>
+                <Button variant="outline" size="sm" onClick={() => refetch()}>
+                  Retry
+                </Button>
               </div>
             )}
 

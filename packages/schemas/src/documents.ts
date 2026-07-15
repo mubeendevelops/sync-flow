@@ -143,10 +143,12 @@ export const listOperationsResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 
+// Matches versions.repo.ts's `json_build_object('userId', ..., 'displayName', ...)` exactly —
+// no `username` (the contributors query never joins it in), both fields always present because
+// the underlying query filters to `o.user_id IS NOT NULL`.
 export const versionContributorSchema = z.object({
-  userId: z.uuid().nullable(),
-  username: z.string().nullable(),
-  displayName: z.string().nullable(),
+  userId: z.uuid(),
+  displayName: z.string(),
 });
 
 export const versionListItemSchema = z.object({

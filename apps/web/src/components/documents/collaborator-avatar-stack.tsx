@@ -1,9 +1,16 @@
+import { memo } from "react";
 import type { Collaborator } from "@sync-flow/schemas";
 import { CollaboratorAvatar } from "@/components/documents/collaborator-avatar";
 
 const MAX_VISIBLE = 4;
 
-export function CollaboratorAvatarStack({ collaborators }: { collaborators: Collaborator[] }) {
+/** Memoized: the dashboard grid re-renders every card on each page fetch/rename/etc — this
+ * skips re-rendering a card's avatar stack unless its own `collaborators` array changed. */
+export const CollaboratorAvatarStack = memo(function CollaboratorAvatarStack({
+  collaborators,
+}: {
+  collaborators: Collaborator[];
+}) {
   const visible = collaborators.slice(0, MAX_VISIBLE);
   const overflow = collaborators.length - visible.length;
 
@@ -23,4 +30,4 @@ export function CollaboratorAvatarStack({ collaborators }: { collaborators: Coll
       )}
     </div>
   );
-}
+});

@@ -9,9 +9,12 @@ const inter = Inter({
   display: "swap",
 });
 
+const DESCRIPTION = "A real-time collaborative document editor.";
+
 export const metadata: Metadata = {
   title: "SyncFlow",
-  description: "A real-time collaborative document editor.",
+  description: DESCRIPTION,
+  openGraph: { title: "SyncFlow", description: DESCRIPTION },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
