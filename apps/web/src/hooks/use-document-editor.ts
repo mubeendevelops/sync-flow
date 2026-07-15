@@ -2,24 +2,42 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useEditor, type Editor } from "@tiptap/react";
+import { useEditor, ReactNodeViewRenderer, type Editor } from "@tiptap/react";
 import { Document } from "@tiptap/extension-document";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Text } from "@tiptap/extension-text";
 import { Bold } from "@tiptap/extension-bold";
 import { Italic } from "@tiptap/extension-italic";
+import { Underline } from "@tiptap/extension-underline";
+import { Strike } from "@tiptap/extension-strike";
+import { Highlight } from "@tiptap/extension-highlight";
+import { TextStyle } from "@tiptap/extension-text-style";
+import { Color } from "@tiptap/extension-color";
+import { Superscript } from "@tiptap/extension-superscript";
+import { Subscript } from "@tiptap/extension-subscript";
 import { Heading } from "@tiptap/extension-heading";
 import { BulletList } from "@tiptap/extension-bullet-list";
 import { OrderedList } from "@tiptap/extension-ordered-list";
 import { ListItem } from "@tiptap/extension-list-item";
 import { Code } from "@tiptap/extension-code";
-import { CodeBlock } from "@tiptap/extension-code-block";
+import { CodeBlockLowlight } from "@tiptap/extension-code-block-lowlight";
 import { Link } from "@tiptap/extension-link";
 import { HardBreak } from "@tiptap/extension-hard-break";
+import { Blockquote } from "@tiptap/extension-blockquote";
+import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
+import { TaskList } from "@tiptap/extension-task-list";
+import { TaskItem } from "@tiptap/extension-task-item";
+import { Table } from "@tiptap/extension-table";
+import { TableRow } from "@tiptap/extension-table-row";
+import { TableHeader } from "@tiptap/extension-table-header";
+import { TableCell } from "@tiptap/extension-table-cell";
 import type { DocumentSnapshot } from "@sync-flow/crdt";
+import { lowlight } from "@/lib/lowlight";
+import { CodeBlockNodeView } from "@/components/editor/code-block-node-view";
 import type { PublicUser } from "@sync-flow/schemas";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useCrdt } from "@/hooks/use-crdt";
+import { SlashCommand, type SlashCommandController } from "@/lib/slash-command";
 import { RemoteCursors, setRemoteCursor, removeRemoteCursor } from "@/lib/remote-cursors";
 import { dedupePresenceByUser, removePresence, upsertPresence } from "@/lib/presence";
 import type { ConnectionState, JoinResult, PresenceUser } from "@/lib/websocket";
@@ -30,6 +48,15 @@ import type { ConnectionState, JoinResult, PresenceUser } from "@/lib/websocket"
 const EDITOR_CLASS =
   "prose dark:prose-invert max-w-none focus:outline-none " +
   "text-[18px] leading-[1.8] [&_p]:leading-[1.8]";
+
+// CodeBlockLowlight + a custom NodeView for the top-right language `<select>` (see
+// `code-block-node-view.tsx`); a module-level constant since it doesn't depend on any
+// per-render state, same idiom as every other extension import above.
+const CodeBlock = CodeBlockLowlight.extend({
+  addNodeView() {
+    return ReactNodeViewRenderer(CodeBlockNodeView);
+  },
+}).configure({ lowlight });
 
 export interface UseDocumentEditorOptions {
   readonly documentId: string;
@@ -69,6 +96,16 @@ export function useDocumentEditor(options: UseDocumentEditorOptions): UseDocumen
   const wsRef = useRef<ReturnType<typeof useWebSocket> | null>(null);
   // A join snapshot that arrived before the editor's view was ready to receive it.
   const pendingSnapshotRef = useRef<DocumentSnapshot | null>(null);
+  // Stable handle shared by the SlashCommand extension and the CRDT bridge: while the slash
+  // menu is open the bridge suppresses op emission, so the transient `/` + filter text never
+  // becomes a CRDT operation. On menu close, `onDismiss` flushes the post-close document into
+  // the CRDT via the live bridge (block change after a command, or the surviving `/…` after
+  // Escape). `useState` (not a ref) so it can be read during render for the extension config;
+  // `onDismiss` reads `crdtRef` only when it fires (menu exit), never during render.
+  const [slashController] = useState<SlashCommandController>(() => ({
+    active: false,
+    onDismiss: () => crdtRef.current?.onLocalChange(),
+  }));
 
   // Live presence (who's currently in the doc), driven by join/leave only — never by cursor
   // moves — so the header avatar stack doesn't re-render on every remote keystroke.
@@ -90,6 +127,13 @@ export function useDocumentEditor(options: UseDocumentEditorOptions): UseDocumen
       Text,
       Bold,
       Italic,
+      Underline,
+      Strike,
+      TextStyle,
+      Color,
+      Highlight.configure({ multicolor: true }),
+      Superscript,
+      Subscript,
       Heading.configure({ levels: [1, 2, 3] }),
       BulletList,
       OrderedList,
@@ -98,6 +142,23 @@ export function useDocumentEditor(options: UseDocumentEditorOptions): UseDocumen
       CodeBlock,
       Link.configure({ openOnClick: false, autolink: true }),
       HardBreak,
+      Blockquote,
+      HorizontalRule,
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      // Structural nodes below (task list, table, blockquote, divider) render + edit locally
+      // and transform via the slash menu, but the v1 plaintext+format CRDT only converges
+      // paragraph/heading/code-block/list *text* — their structure is not yet synced across
+      // peers or persisted on reload (same v1 scope as the documented listType/hard-break
+      // limits). Tracked for the v2 structural CRDT. The one exception: a task item's `checked`
+      // state IS live-synced as a block-anchor format op (see `taskChecked` in crdt-bridge.ts) —
+      // it just doesn't (yet) create the surrounding taskList/taskItem structure on a peer who
+      // doesn't already have it, same as `listType`.
+      Table.configure({ resizable: false }),
+      TableRow,
+      TableHeader,
+      TableCell,
+      SlashCommand.configure({ controller: slashController }),
       RemoteCursors,
     ],
     editorProps: {
@@ -184,6 +245,7 @@ export function useDocumentEditor(options: UseDocumentEditorOptions): UseDocumen
     authorId: user?.id ?? "",
     sendOps: ws.sendEdit,
     sendCursor: ws.sendCursor,
+    slashController,
   });
 
   // Keep the latest-value refs current for the editor's static callbacks.

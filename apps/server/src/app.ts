@@ -8,7 +8,11 @@ import type { DbClient } from "./db/types.js";
 import type { CacheClient } from "./cache/types.js";
 import { createHealthRouter } from "./routes/health.js";
 import { createAuthRouter, type AuthRouterDeps } from "./routes/auth.js";
-import { createDocumentsRouter, type DocumentsRestoreDeps } from "./routes/documents.js";
+import {
+  createDocumentsRouter,
+  type DocumentsRestoreDeps,
+  type DocumentsExportDeps,
+} from "./routes/documents.js";
 import { createUsersRouter } from "./routes/users.js";
 import { notFoundHandler } from "./middleware/not-found.js";
 import { errorHandler } from "./middleware/error-handler.js";
@@ -21,6 +25,8 @@ export interface AppDeps {
   auth: Omit<AuthRouterDeps, "db">;
   /** Realtime wiring for document restore (POST /restore); omit in tests that don't exercise it. */
   restore?: DocumentsRestoreDeps;
+  /** Wiring for PDF export (GET /export/pdf); omit in tests that don't exercise it. */
+  export?: DocumentsExportDeps;
 }
 
 /** Pure factory: builds an Express app from injected deps, doesn't listen. Test-friendly. */
@@ -64,6 +70,7 @@ export function createApp(deps: AppDeps): Express {
       db: deps.db,
       jwtAccessSecret: deps.auth.jwtAccessSecret,
       restore: deps.restore,
+      export: deps.export,
     }),
   );
   app.use(

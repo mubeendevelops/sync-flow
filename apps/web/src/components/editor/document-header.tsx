@@ -2,12 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, CheckCircle2, History, Loader2, Share2, WifiOff } from "lucide-react";
+import { toast } from "sonner";
+import { ArrowLeft, CheckCircle2, Download, History, Loader2, Share2, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PresenceAvatarStack } from "@/components/documents/presence-avatar-stack";
 import { ShareDialog } from "@/components/documents/share-dialog";
 import { VersionHistoryPanel } from "@/components/documents/version-history-panel";
+import { downloadDocumentPdf } from "@/lib/pdf-export";
 import { toSavedState, type SavedState } from "@/lib/connection-status";
 import type { ConnectionState, PresenceUser } from "@/lib/websocket";
 import { cn } from "@/lib/utils";
@@ -104,6 +106,7 @@ export function DocumentHeader({
   const router = useRouter();
   const [shareOpen, setShareOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const lastCommittedTitle = useRef(title);
 
@@ -125,6 +128,18 @@ export function DocumentHeader({
     if (next !== lastCommittedTitle.current) {
       lastCommittedTitle.current = next;
       onTitleCommit(next);
+    }
+  }
+
+  async function handleDownloadPdf() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await downloadDocumentPdf(documentId, title ?? "");
+    } catch {
+      toast.error("Couldn't export the PDF. Please try again.");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -181,6 +196,22 @@ export function DocumentHeader({
         <ConnectionPill connectionState={connectionState} isSaving={isSaving} />
 
         <PresenceAvatarStack users={activeUsers} selfId={selfId} />
+
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Download PDF"
+          className="shrink-0 gap-1.5 px-2 sm:px-3"
+          disabled={exporting}
+          onClick={handleDownloadPdf}
+        >
+          {exporting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Download className="h-3.5 w-3.5" />
+          )}
+          <span className="hidden sm:inline">PDF</span>
+        </Button>
 
         <Button
           variant="outline"

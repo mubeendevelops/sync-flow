@@ -20,9 +20,18 @@ import { listVersions, type VersionListItem } from "../documents/versions.repo.j
 import {
   reconstructVersion,
   performRestore,
+  hydrateDocument,
   type RestoreBroadcaster,
+  type CrdtStateCache,
 } from "../crdt-service/index.js";
 import type { DocumentStore } from "../crdt-service/index.js";
+import {
+  renderHtmlDocument,
+  readCachedPdf,
+  writeCachedPdf,
+  pdfContentDisposition,
+  type PdfRenderer,
+} from "../documents/export/index.js";
 import {
   listAccessibleDocuments,
   listCollaborators,
@@ -58,11 +67,24 @@ export interface DocumentsRestoreDeps {
   readonly broadcaster: RestoreBroadcaster;
 }
 
+/**
+ * Wiring for GET /export/pdf: the Redis cache (doubles as the CRDT hot-state cache used to
+ * hydrate the current document, and the rendered-PDF cache) and the Chromium PDF renderer.
+ * Optional — the renderer is injectable so tests can supply a fake instead of launching a
+ * real browser, and the endpoint 500s cleanly if a deployment leaves it unwired.
+ */
+export interface DocumentsExportDeps {
+  readonly cache: CrdtStateCache;
+  readonly renderPdf: PdfRenderer;
+}
+
 export interface DocumentsRouterDeps {
   db: DbClient;
   jwtAccessSecret: string;
   /** Realtime wiring for POST /restore; omit to disable restore (list/get still work). */
   restore?: DocumentsRestoreDeps;
+  /** Wiring for GET /export/pdf; omit to disable PDF export. */
+  export?: DocumentsExportDeps;
 }
 
 const VERSION_PREVIEW_LENGTH = 140;
@@ -333,6 +355,46 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
         });
         const nextCursor = hasMore ? String(operations[operations.length - 1].seq) : null;
         res.status(200).json({ operations: operations.map(toOperationDto), nextCursor });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ---- export -------------------------------------------------------------
+
+  // Download the current document as a PDF. A read action — any member (owner/editor/viewer)
+  // may export. Rendered server-side via headless Chromium and cached in Redis by content
+  // version, so an unchanged document re-serves the cached buffer instead of re-rendering.
+  router.get(
+    "/:id/export/pdf",
+    validate({ params: documentIdParamsSchema }),
+    async (req, res, next) => {
+      try {
+        const { id } = req.params as unknown as { id: string };
+        const { document } = await assertCanAccess(deps.db, req.user!.id, id, "viewer");
+        if (!deps.export) {
+          throw AppError.internal("PDF export is not available on this server");
+        }
+        const { cache, renderPdf } = deps.export;
+
+        // Hydrate the current durable CRDT state; `seq` is the content version (advances on
+        // every op) and keys the PDF cache so any edit invalidates a stale render.
+        const { doc, seq } = await hydrateDocument({ db: deps.db, cache }, id, {
+          replicaId: `export:${id}`,
+          authorId: "export",
+        });
+
+        let pdf = await readCachedPdf(cache, id, seq);
+        if (!pdf) {
+          pdf = await renderPdf(renderHtmlDocument(document.title, doc));
+          await writeCachedPdf(cache, id, seq, pdf);
+        }
+
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", pdfContentDisposition(document.title));
+        res.setHeader("Content-Length", pdf.length);
+        res.status(200).send(pdf);
       } catch (err) {
         next(err);
       }

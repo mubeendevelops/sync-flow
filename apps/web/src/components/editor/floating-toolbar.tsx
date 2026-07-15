@@ -6,8 +6,11 @@ import { BubbleMenu } from "@tiptap/react/menus";
 import { Link2, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-import { MARK_ITEMS } from "@/components/editor/toolbar-items";
+import { INLINE_CODE_ITEM, MARK_ITEMS } from "@/components/editor/toolbar-items";
+import { ToolbarButton } from "@/components/editor/toolbar-button";
+import { ColorPicker } from "@/components/editor/color-picker";
+
+const COMPACT_BUTTON = "h-7 w-7";
 
 // Tailwind's `sm` breakpoint — a selection-tracking bubble menu fights with native touch
 // selection handles on phone-width viewports, so it's suppressed there in favor of the mobile
@@ -79,31 +82,38 @@ export function FloatingToolbar({ editor }: { editor: Editor | null }) {
         </div>
       ) : (
         <>
-          {MARK_ITEMS.map(({ label, icon: Icon, isActive, run }) => (
-            <Button
+          {MARK_ITEMS.map(({ label, icon: Icon, shortcut, isActive, run }) => (
+            <ToolbarButton
               key={label}
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn("h-7 w-7", isActive(editor) && "bg-accent text-accent-foreground")}
-              aria-label={label}
-              aria-pressed={isActive(editor)}
+              label={label}
+              shortcut={shortcut}
+              isActive={isActive(editor)}
+              className={COMPACT_BUTTON}
               onClick={() => run(editor)}
             >
               <Icon className="h-3.5 w-3.5" />
-            </Button>
+            </ToolbarButton>
           ))}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className={cn("h-7 w-7", editor.isActive("link") && "bg-accent text-accent-foreground")}
-            aria-label={editor.isActive("link") ? "Edit link" : "Add link"}
-            aria-pressed={editor.isActive("link")}
+          <ColorPicker editor={editor} mode="highlight" className={COMPACT_BUTTON} />
+          <ColorPicker editor={editor} mode="textColor" className={COMPACT_BUTTON} />
+          <ToolbarButton
+            label={editor.isActive("link") ? "Edit link" : "Add link"}
+            shortcut="Ctrl+K"
+            isActive={editor.isActive("link")}
+            className={COMPACT_BUTTON}
             onClick={openLinkEditor}
           >
             <Link2 className="h-3.5 w-3.5" />
-          </Button>
+          </ToolbarButton>
+          <ToolbarButton
+            label={INLINE_CODE_ITEM.label}
+            shortcut={INLINE_CODE_ITEM.shortcut}
+            isActive={INLINE_CODE_ITEM.isActive(editor)}
+            className={COMPACT_BUTTON}
+            onClick={() => INLINE_CODE_ITEM.run(editor)}
+          >
+            <INLINE_CODE_ITEM.icon className="h-3.5 w-3.5" />
+          </ToolbarButton>
         </>
       )}
     </BubbleMenu>

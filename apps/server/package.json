@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
+    "@sparticuz/chromium": "^149.0.0",
     "@sync-flow/crdt": "workspace:*",
     "@sync-flow/schemas": "workspace:*",
     "argon2": "^0.41.1",
@@ -31,12 +32,12 @@
     "pg": "^8.13.1",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
+    "puppeteer-core": "^25.3.0",
     "redis": "^6.1.0",
     "socket.io": "^4.8.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.10",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
@@ -44,6 +45,7 @@
     "@types/node": "^22.10.5",
     "@types/pg": "^8.11.10",
     "@types/supertest": "^7.2.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "dotenv-cli": "^8.0.0",
     "node-pg-migrate": "^7.9.1",
     "pino-pretty": "^13.1.3",

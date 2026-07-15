@@ -9,6 +9,7 @@ import { createSocketServer, type DocIOServer } from "@/sockets/io.js";
 import { createRedisAdapter } from "@/sockets/adapter.js";
 import { createPeerOpRelay } from "@/sockets/peer-relay.js";
 import { DocumentRoomManager } from "@/sockets/room-manager.js";
+import { renderPdf, closePdfBrowser } from "@/documents/export/index.js";
 import { parseTtlToSeconds } from "@/auth/tokens.js";
 
 async function main(): Promise<void> {
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
       cookieDomain: config.COOKIE_DOMAIN,
     },
     restore: { manager, broadcaster: restoreBroadcaster },
+    export: { cache: redis, renderPdf },
   });
 
   const httpServer = createServer(app);
@@ -106,6 +108,8 @@ async function main(): Promise<void> {
       });
       // Drain open doc stores (flush buffered ops + final snapshots) before pg closes.
       await manager.closeAll();
+      // Tear down the shared headless-Chromium instance used for PDF export.
+      await closePdfBrowser();
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });

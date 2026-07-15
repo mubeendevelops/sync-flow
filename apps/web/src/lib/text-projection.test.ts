@@ -4,12 +4,16 @@ import { Document } from "@tiptap/extension-document";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Text } from "@tiptap/extension-text";
 import { Heading } from "@tiptap/extension-heading";
+import { CodeBlock } from "@tiptap/extension-code-block";
+import { TaskList } from "@tiptap/extension-task-list";
+import { TaskItem } from "@tiptap/extension-task-item";
 import {
   docToText,
   indexToPmPos,
   pmPosToIndex,
   diffText,
   buildRemoteTransaction,
+  collectBlockInfos,
 } from "./text-projection";
 
 function makeEditor(content?: string): Editor {
@@ -85,4 +89,44 @@ describe("buildRemoteTransaction", () => {
       editor.destroy();
     });
   }
+});
+
+describe("collectBlockInfos", () => {
+  it("reports a codeBlock's language attribute, null for every other block type", () => {
+    const editor = new Editor({
+      extensions: [Document, Paragraph, Text, CodeBlock],
+      content: "<p>plain</p>",
+    });
+    editor.chain().setTextSelection(1).setCodeBlock({ language: "typescript" }).run();
+    const [info] = collectBlockInfos(editor.state.doc);
+    expect(info?.blockType).toBe("codeBlock");
+    expect(info?.codeLanguage).toBe("typescript");
+    editor.destroy();
+  });
+
+  it("reports null codeLanguage and null taskItem for an ordinary paragraph", () => {
+    const editor = makeEditor("<p>hello</p>");
+    const [info] = collectBlockInfos(editor.state.doc);
+    expect(info?.codeLanguage).toBeNull();
+    expect(info?.taskItem).toBeNull();
+    editor.destroy();
+  });
+
+  it("reports a task item's checked state and node position", () => {
+    const editor = new Editor({
+      extensions: [Document, Paragraph, Text, TaskList, TaskItem.configure({ nested: true })],
+    });
+    editor.commands.insertContent("buy milk");
+    editor.chain().toggleTaskList().run();
+    const [info] = collectBlockInfos(editor.state.doc);
+    expect(info?.taskItem?.checked).toBe(false);
+
+    editor.commands.command(({ tr }) => {
+      tr.setNodeAttribute(info!.taskItem!.pos, "checked", true);
+      return true;
+    });
+    const [checkedInfo] = collectBlockInfos(editor.state.doc);
+    expect(checkedInfo?.taskItem?.checked).toBe(true);
+    editor.destroy();
+  });
 });

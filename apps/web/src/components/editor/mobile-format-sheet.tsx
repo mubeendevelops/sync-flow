@@ -6,13 +6,15 @@ import { Check, Link2, Type } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { BLOCK_ITEMS, MARK_ITEMS } from "@/components/editor/toolbar-items";
+import { ColorPicker } from "@/components/editor/color-picker";
+import { INLINE_CODE_ITEM, LIST_ITEMS, MARK_ITEMS, PARAGRAPH_STYLE_ITEMS } from "@/components/editor/toolbar-items";
 import { cn } from "@/lib/utils";
 
 /**
  * Mobile equivalent of `FixedToolbar` + `FloatingToolbar` combined: below `sm` (390px-class
- * viewports), a 6-icon row and a selection-tracking bubble menu don't fit/work well, so both are
- * replaced by one "Format" button that opens a bottom sheet with every formatting action.
+ * viewports), a multi-group icon toolbar and a selection-tracking bubble menu don't fit/work
+ * well, so both are replaced by one "Format" button that opens a bottom sheet with every
+ * formatting action.
  */
 export function MobileFormatSheet({ editor }: { editor: Editor | null }) {
   const [open, setOpen] = useState(false);
@@ -66,10 +68,10 @@ export function MobileFormatSheet({ editor }: { editor: Editor | null }) {
 
           {editor && (
             <div className="space-y-4 px-4 pb-6">
-              <div className="grid grid-cols-4 gap-2">
-                {BLOCK_ITEMS.map(({ label, icon: Icon, isActive, run }) => (
+              <div className="grid grid-cols-3 gap-2">
+                {PARAGRAPH_STYLE_ITEMS.map(({ id, label, icon: Icon, isActive, run }) => (
                   <Button
-                    key={label}
+                    key={id}
                     type="button"
                     variant="outline"
                     aria-label={label}
@@ -87,6 +89,23 @@ export function MobileFormatSheet({ editor }: { editor: Editor | null }) {
               </div>
 
               <div className="flex items-center gap-2">
+                {LIST_ITEMS.map(({ label, icon: Icon, isActive, run }) => (
+                  <Button
+                    key={label}
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label={label}
+                    aria-pressed={isActive(editor)}
+                    className={cn(isActive(editor) && "bg-accent text-accent-foreground")}
+                    onClick={() => run(editor)}
+                  >
+                    <Icon className="h-4 w-4" />
+                  </Button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
                 {MARK_ITEMS.map(({ label, icon: Icon, isActive, run }) => (
                   <Button
                     key={label}
@@ -101,7 +120,22 @@ export function MobileFormatSheet({ editor }: { editor: Editor | null }) {
                     <Icon className="h-4 w-4" />
                   </Button>
                 ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={INLINE_CODE_ITEM.label}
+                  aria-pressed={INLINE_CODE_ITEM.isActive(editor)}
+                  className={cn(INLINE_CODE_ITEM.isActive(editor) && "bg-accent text-accent-foreground")}
+                  onClick={() => INLINE_CODE_ITEM.run(editor)}
+                >
+                  <INLINE_CODE_ITEM.icon className="h-4 w-4" />
+                </Button>
+                <ColorPicker editor={editor} mode="highlight" className="h-9 w-9" />
+                <ColorPicker editor={editor} mode="textColor" className="h-9 w-9" />
+              </div>
 
+              <div className="flex items-center gap-2">
                 {editingLink ? (
                   <div className="flex flex-1 items-center gap-1">
                     <Input

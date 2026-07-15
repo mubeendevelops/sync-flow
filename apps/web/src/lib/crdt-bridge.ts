@@ -72,10 +72,12 @@ function computeBlockAnchors(doc: RGADocument): CharId[] {
   return anchors;
 }
 
-/** Resolve a stored `blockType` value to the PM node type + attrs `setBlockType` needs. */
+/** Resolve a stored `blockType` value (plus, for `codeBlock`, its stored `codeLanguage`) to the
+ * PM node type + attrs `setBlockType` needs. */
 function blockNodeTypeFor(
   schema: Schema,
   blockType: string | null,
+  codeLanguage?: string | null,
 ): { type: NodeType; attrs?: Record<string, unknown> } | null {
   const heading = schema.nodes.heading;
   switch (blockType as BlockTypeName | null) {
@@ -86,7 +88,9 @@ function blockNodeTypeFor(
     case "heading3":
       return heading ? { type: heading, attrs: { level: 3 } } : null;
     case "codeBlock":
-      return schema.nodes.codeBlock ? { type: schema.nodes.codeBlock } : null;
+      return schema.nodes.codeBlock
+        ? { type: schema.nodes.codeBlock, attrs: codeLanguage ? { language: codeLanguage } : undefined }
+        : null;
     default:
       return schema.nodes.paragraph ? { type: schema.nodes.paragraph } : null;
   }
@@ -131,6 +135,15 @@ function mintFormatOps(doc: RGADocument, pmDoc: PMNode): Op[] {
     if (block.listType !== crdtListType) {
       ops.push(localFormat(doc, anchorId, "listType", block.listType));
     }
+    const crdtCodeLanguage = doc.getFormat(anchorId, "codeLanguage") ?? null;
+    if (block.codeLanguage !== crdtCodeLanguage) {
+      ops.push(localFormat(doc, anchorId, "codeLanguage", block.codeLanguage));
+    }
+    const crdtChecked = doc.getFormat(anchorId, "taskChecked") === true;
+    const blockChecked = block.taskItem?.checked ?? false;
+    if (block.taskItem && blockChecked !== crdtChecked) {
+      ops.push(localFormat(doc, anchorId, "taskChecked", blockChecked ? true : null));
+    }
   }
   return ops;
 }
@@ -161,8 +174,12 @@ function dedupeFormatTargets(ops: readonly FormatOp[]): FormatTarget[] {
 /**
  * Apply the current CRDT-truth formatting for `targets` onto `tr`. Inline marks are applied
  * directly via `addMark`/`removeMark` at the char's current position. `blockType` re-types the
- * containing block. `listType` is a known v1 limitation — captured and stored (converges,
- * round-trips through snapshots) but not yet live-reconciled into a remote peer's editor.
+ * containing block (reading `codeLanguage` fresh so a concurrent language pick is never lost to
+ * ordering — see `dedupeFormatTargets`). `codeLanguage` alone re-attributes an already-`codeBlock`
+ * block. `taskChecked` sets the ancestor `taskItem`'s `checked` attr — this reconciles the
+ * checkbox live but, like `listType`, doesn't (yet) recreate the task-list STRUCTURE on a peer
+ * that doesn't already have it (known v1 structural-CRDT limitation, see CLAUDE.md). `listType`
+ * itself remains unreconciled here for the same reason.
  */
 function applyFormatOpsToTransaction(
   tr: Transaction,
@@ -183,22 +200,51 @@ function applyFormatOpsToTransaction(
       if (bi === -1) continue;
       const info = collectBlockInfos(tr.doc)[bi];
       if (!info) continue;
-      const type = blockNodeTypeFor(schema, typeof value === "string" ? value : null);
+      const codeLanguage = doc.getFormat(target.charId, "codeLanguage");
+      const type = blockNodeTypeFor(
+        schema,
+        typeof value === "string" ? value : null,
+        typeof codeLanguage === "string" ? codeLanguage : null,
+      );
       if (type) tr.setBlockType(info.pmStart, info.pmStart + info.len, type.type, type.attrs);
       continue;
     }
 
-    // Inline mark.
+    if (target.key === "codeLanguage") {
+      const bi = blockAnchors.findIndex((a) => idsEqual(a, target.charId));
+      if (bi === -1) continue;
+      const info = collectBlockInfos(tr.doc)[bi];
+      // Only meaningful once the block is already a codeBlock — if a concurrent blockType op
+      // hasn't landed yet, that op's own handling reads codeLanguage fresh and applies it.
+      if (!info || info.blockType !== "codeBlock") continue;
+      tr.setNodeAttribute(info.pmStart - 1, "language", typeof value === "string" ? value : null);
+      continue;
+    }
+
+    if (target.key === "taskChecked") {
+      const bi = blockAnchors.findIndex((a) => idsEqual(a, target.charId));
+      if (bi === -1) continue;
+      const info = collectBlockInfos(tr.doc)[bi];
+      if (!info?.taskItem) continue; // no local taskItem structure to attribute onto
+      tr.setNodeAttribute(info.taskItem.pos, "checked", value === true);
+      continue;
+    }
+
+    // Inline mark. `textColor` targets the shared `textStyle` mark's `color` attr (see
+    // `MARK_KEYS`'s doc comment); `highlight` carries its color the same way `link` carries
+    // its href.
     const index = idToIndex(doc, target.charId);
     if (index === -1) continue; // tombstoned — no visible position to mark
     const from = indexToPmPos(tr.doc, index);
     const to = from + 1;
-    const markType = schema.marks[target.key];
+    const markType = target.key === "textColor" ? schema.marks.textStyle : schema.marks[target.key];
     if (!markType) continue;
     if (value === null || value === false) {
       tr.removeMark(from, to, markType);
     } else if (target.key === "link" && typeof value === "string") {
       tr.addMark(from, to, markType.create({ href: value }));
+    } else if ((target.key === "highlight" || target.key === "textColor") && typeof value === "string") {
+      tr.addMark(from, to, markType.create({ color: value }));
     } else {
       tr.addMark(from, to, markType.create());
     }
@@ -221,9 +267,13 @@ function buildInlineContent(
     if (runText.length === 0) return;
     const marks = allowMarks
       ? runMarks.flatMap(({ key, value }) => {
-          const markType = schema.marks[key];
+          const markType = key === "textColor" ? schema.marks.textStyle : schema.marks[key];
           if (!markType) return [];
-          return [key === "link" && typeof value === "string" ? markType.create({ href: value }) : markType.create()];
+          if (key === "link" && typeof value === "string") return [markType.create({ href: value })];
+          if ((key === "highlight" || key === "textColor") && typeof value === "string") {
+            return [markType.create({ color: value })];
+          }
+          return [markType.create()];
         })
       : [];
     nodes.push(schema.text(runText, marks));
@@ -260,6 +310,13 @@ export interface CrdtBridgeOptions {
   readonly sendOps: (ops: Op[]) => void;
   /** Publish this replica's selection as encoded CRDT anchor/head ids. */
   readonly sendCursor: (anchor: string | null, head: string | null) => void;
+  /**
+   * When this returns true, `onLocalChange` skips diffing/emitting entirely. Used by the
+   * slash-command menu: the `/` + filter text the user types to drive the menu is transient
+   * local UI state and must never become a CRDT op (only the final block transform does).
+   * Optional — defaults to never suppressing.
+   */
+  readonly isSuppressed?: () => boolean;
 }
 
 export interface CrdtBridge {
@@ -283,7 +340,7 @@ export interface CrdtBridge {
 const CURSOR_THROTTLE_MS = 50;
 
 export function createCrdtBridge(options: CrdtBridgeOptions): CrdtBridge {
-  const { editor, doc, replicaId, sendOps, sendCursor } = options;
+  const { editor, doc, replicaId, sendOps, sendCursor, isSuppressed } = options;
 
   // Mirror of the doc's plaintext, kept in sync on every local + remote change, so each
   // diff is against the exact previous projection rather than re-deriving from the doc.
@@ -331,7 +388,12 @@ export function createCrdtBridge(options: CrdtBridgeOptions): CrdtBridge {
     const pmNodes = blocksChars.map((chars, bi) => {
       const anchorId = anchors[bi] ?? ROOT;
       const blockType = doc.getFormat(anchorId, "blockType");
-      const target = blockNodeTypeFor(schema, typeof blockType === "string" ? blockType : null);
+      const codeLanguage = doc.getFormat(anchorId, "codeLanguage");
+      const target = blockNodeTypeFor(
+        schema,
+        typeof blockType === "string" ? blockType : null,
+        typeof codeLanguage === "string" ? codeLanguage : null,
+      );
       const nodeType = target?.type ?? schema.nodes.paragraph;
       if (!nodeType) throw new Error("editor schema has no paragraph node type");
       const allowMarks = nodeType.name !== "codeBlock";
@@ -356,6 +418,12 @@ export function createCrdtBridge(options: CrdtBridgeOptions): CrdtBridge {
     // here — so a viewer keeps seeing others' edits live. (The server rejects a viewer's
     // ops regardless; this just makes sure the client never even tries.)
     if (!editor.isEditable) return;
+    // Slash-command menu is open: the `/` + filter text is local-only UI, not document
+    // content — don't diff or emit anything. `lastText`/`doc` stay at the pre-slash state,
+    // so when the menu closes the flush (or next edit) reconciles cleanly: a command applies
+    // just the block-type change (its transform already removed the `/…`), while Escape leaves
+    // the `/…` and the flush emits it as ordinary text.
+    if (isSuppressed?.()) return;
     const newText = docToText(editor.state.doc);
     const diff = diffText(lastText, newText);
 

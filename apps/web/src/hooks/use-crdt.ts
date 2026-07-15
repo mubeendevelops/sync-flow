@@ -22,6 +22,12 @@ export interface UseCrdtParams {
   readonly authorId: string;
   readonly sendOps: (ops: Op[]) => void;
   readonly sendCursor: (anchor: string | null, head: string | null) => void;
+  /**
+   * Shared handle with the slash-command extension. While its `active` flag is set, the bridge
+   * suppresses op emission (the `/` + filter text stays local UI); its `onDismiss` is pointed at
+   * the current bridge's `onLocalChange` so a menu close reconciles the editor into the CRDT.
+   */
+  readonly slashController?: { active: boolean; onDismiss?: () => void };
 }
 
 export interface UseCrdtResult {
@@ -46,7 +52,7 @@ export interface UseCrdtResult {
 }
 
 export function useCrdt(params: UseCrdtParams): UseCrdtResult {
-  const { editor, authorId, sendOps, sendCursor } = params;
+  const { editor, authorId, sendOps, sendCursor, slashController } = params;
 
   // Minted once per tab (lazy state, not a ref, so it's stable without a render-time read).
   const [replicaId] = useState(() => crypto.randomUUID());
@@ -61,10 +67,19 @@ export function useCrdt(params: UseCrdtParams): UseCrdtResult {
       bridgeRef.current?.destroy();
       const doc = hydrateDocument(snapshot, { replicaId, authorId });
       docRef.current = doc;
-      bridgeRef.current = createCrdtBridge({ editor, doc, replicaId, sendOps, sendCursor });
+      bridgeRef.current = createCrdtBridge({
+        editor,
+        doc,
+        replicaId,
+        sendOps,
+        sendCursor,
+        // While the slash menu is open, suppress op emission so the `/` + filter text stays
+        // local UI (the menu's own `onDismiss` flushes the final state via `onLocalChange`).
+        isSuppressed: slashController ? () => slashController.active : undefined,
+      });
       bridgeRef.current.syncEditorFromDoc();
     },
-    [editor, replicaId, authorId, sendOps, sendCursor],
+    [editor, replicaId, authorId, sendOps, sendCursor, slashController],
   );
 
   // Cancel the bridge's pending cursor timer when the hook unmounts.

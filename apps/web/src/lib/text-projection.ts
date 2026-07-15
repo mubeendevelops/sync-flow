@@ -31,11 +31,25 @@ export const BLOCK_SEPARATOR = "\n";
 
 /**
  * Inline mark keys the CRDT format layer tracks, matched 1:1 to the TipTap mark type names
- * registered in `useDocumentEditor` (Bold/Italic/Code/Link). Kept as an explicit list — same
- * idiom as `toolbar-items.ts`'s `MARK_ITEMS`/`BLOCK_ITEMS` — rather than reflected from the
- * schema, so adding a new mark is a deliberate one-line change here, not silent.
+ * registered in `useDocumentEditor` (Bold/Italic/Underline/Strike/Code/Link/Highlight/
+ * Superscript/Subscript), except `textColor` which maps to the `textStyle` mark's `color`
+ * attribute (Color extension doesn't register its own mark type — see `marksOf`/`markValue`).
+ * Kept as an explicit list — same idiom as `toolbar-items.ts`'s `MARK_ITEMS`/`BLOCK_ITEMS` —
+ * rather than reflected from the schema, so adding a new mark is a deliberate one-line change
+ * here, not silent.
  */
-export const MARK_KEYS = ["bold", "italic", "code", "link"] as const;
+export const MARK_KEYS = [
+  "bold",
+  "italic",
+  "underline",
+  "strike",
+  "code",
+  "link",
+  "highlight",
+  "textColor",
+  "superscript",
+  "subscript",
+] as const;
 export type MarkKey = (typeof MARK_KEYS)[number];
 
 /** Block-level node types the CRDT format layer round-trips through `blockType`. */
@@ -49,9 +63,20 @@ interface Block {
   readonly text: string;
 }
 
+/** A block whose textblock is the paragraph inside a `taskItem` — its checked state, live. */
+export interface TaskItemInfo {
+  /** PM position of the `taskItem` node itself (for `tr.setNodeAttribute`). */
+  readonly pos: number;
+  readonly checked: boolean;
+}
+
 export interface BlockInfo extends Block {
   readonly blockType: BlockTypeName;
   readonly listType: "bulletList" | "orderedList" | null;
+  /** Selected language for a `codeBlock` (CodeBlockLowlight's `language` attr), else `null`. */
+  readonly codeLanguage: string | null;
+  /** Set when this block is a `taskItem`'s paragraph — `null` for every other block. */
+  readonly taskItem: TaskItemInfo | null;
 }
 
 function blockTypeOf(node: PMNode): BlockTypeName {
@@ -75,6 +100,18 @@ function listTypeAt(doc: PMNode, pos: number): "bulletList" | "orderedList" | nu
   return null;
 }
 
+/** Nearest ancestor `taskItem` of the node at `pos`, or `null` if it isn't inside one. */
+function taskItemAt(doc: PMNode, pos: number): TaskItemInfo | null {
+  const $pos = doc.resolve(pos);
+  for (let d = $pos.depth; d > 0; d -= 1) {
+    const node = $pos.node(d);
+    if (node.type.name === "taskItem") {
+      return { pos: $pos.before(d), checked: node.attrs.checked === true };
+    }
+  }
+  return null;
+}
+
 /** Enumerate the document's textblocks in document order. A textblock never nests, so we don't descend into one. */
 function collectBlocks(doc: PMNode): Block[] {
   const blocks: Block[] = [];
@@ -88,7 +125,8 @@ function collectBlocks(doc: PMNode): Block[] {
   return blocks;
 }
 
-/** Like {@link collectBlocks}, plus each block's node type and list nesting. */
+/** Like {@link collectBlocks}, plus each block's node type, list nesting, code language, and
+ * task-item checked state. */
 export function collectBlockInfos(doc: PMNode): BlockInfo[] {
   const blocks: BlockInfo[] = [];
   doc.descendants((node, pos) => {
@@ -99,6 +137,11 @@ export function collectBlockInfos(doc: PMNode): BlockInfo[] {
         text: node.textContent,
         blockType: blockTypeOf(node),
         listType: listTypeAt(doc, pos),
+        codeLanguage:
+          node.type.name === "codeBlock" && typeof node.attrs.language === "string"
+            ? node.attrs.language
+            : null,
+        taskItem: taskItemAt(doc, pos),
       });
       return false;
     }
@@ -113,18 +156,33 @@ export interface ProjectedChar {
   readonly marks: Partial<Record<MarkKey, string | boolean>>;
 }
 
-/** A mark's format-op value: the href for `link`, `true` for every other (boolean) mark. */
+/** A mark's format-op value: the href for `link`, the color for `highlight`, `true` for every
+ * other (boolean) mark. */
 function markValue(mark: Mark): string | boolean {
   if (mark.type.name === "link") {
     const href = mark.attrs.href;
     return typeof href === "string" ? href : true;
   }
+  if (mark.type.name === "highlight") {
+    const color = mark.attrs.color;
+    return typeof color === "string" ? color : true;
+  }
   return true;
 }
 
+/**
+ * `textColor` is special: the Color extension stores its value as the `color` attribute on the
+ * shared `textStyle` mark rather than registering its own mark type, so it isn't reachable via
+ * the generic `MARK_KEYS`-name-matches-mark-type-name path every other mark uses.
+ */
 function marksOf(marks: readonly Mark[]): Partial<Record<MarkKey, string | boolean>> {
   const out: Partial<Record<MarkKey, string | boolean>> = {};
   for (const m of marks) {
+    if (m.type.name === "textStyle") {
+      const color = m.attrs.color;
+      if (typeof color === "string") out.textColor = color;
+      continue;
+    }
     if ((MARK_KEYS as readonly string[]).includes(m.type.name)) {
       out[m.type.name as MarkKey] = markValue(m);
     }
