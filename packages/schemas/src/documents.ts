@@ -126,7 +126,7 @@ export const inviteMemberResponseSchema = z.object({ member: memberSchema });
 export const operationSchema = z.object({
   id: z.uuid(),
   seq: z.number().int(),
-  opType: z.enum(["insert", "delete", "revive"]),
+  opType: z.enum(["insert", "delete", "revive", "format"]),
   charId: z.string(),
   afterId: z.string().nullable(),
   value: z.string().nullable(),
@@ -135,6 +135,8 @@ export const operationSchema = z.object({
   opVersion: z.number().int(),
   userId: z.uuid().nullable(),
   createdAt: z.iso.datetime(),
+  /** Format attribute name; only present when `opType === "format"`. */
+  formatKey: z.string().nullable(),
 });
 export type Operation = z.infer<typeof operationSchema>;
 

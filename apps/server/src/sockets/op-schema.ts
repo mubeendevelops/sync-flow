@@ -48,7 +48,24 @@ const deleteOpSchema = z.object({
   opVersion: opVersionSchema,
 });
 
-const opSchema = z.discriminatedUnion("type", [insertOpSchema, deleteOpSchema]);
+const MAX_FORMAT_KEY_LEN = 64;
+
+// NOTE: `revive` is deliberately NOT in this union. Per CLAUDE.md, revive ops are minted only
+// server-side (the undo/redo socket handlers) — never accepted from a client's `edit` payload.
+// Adding it here would let a client forge a revive of any known char id, bypassing the
+// undo/redo flow's own bookkeeping (Redis undo/redo stacks) to resurrect content another user
+// deliberately deleted.
+const formatOpSchema = z.object({
+  type: z.literal("format"),
+  charId: charIdSchema,
+  key: z.string().min(1).max(MAX_FORMAT_KEY_LEN),
+  value: z.union([z.string().max(MAX_AUTHOR_LEN), z.boolean(), z.null()]),
+  clock: z.number().int().min(0),
+  replicaId: z.string().min(1).max(MAX_ID_LEN),
+  opVersion: opVersionSchema,
+});
+
+const opSchema = z.discriminatedUnion("type", [insertOpSchema, deleteOpSchema, formatOpSchema]);
 
 const editOpsSchema = z.array(opSchema).min(1).max(MAX_OPS_PER_EDIT);
 

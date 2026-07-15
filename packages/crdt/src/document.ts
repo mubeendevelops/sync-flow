@@ -26,7 +26,13 @@
  */
 
 import { type CharId, ROOT, encodeId, decodeId, compareId, isRoot, LamportClock } from "./id.js";
-import type { InsertOp, DeleteOp, ReviveOp } from "./operations.js";
+import type { InsertOp, DeleteOp, ReviveOp, FormatOp } from "./operations.js";
+
+/** One formatting attribute's current LWW state: its value and the stamp that set it. */
+interface FormatEntry {
+  readonly value: string | boolean | null;
+  readonly stamp: CharId;
+}
 
 interface Node {
   readonly id: CharId;
@@ -45,6 +51,8 @@ interface Node {
   readonly afterId: CharId;
   prev: Node | null;
   next: Node | null;
+  /** Per-attribute LWW registers (formatting), keyed by attribute name. Lazy — most chars carry no formatting. */
+  formats: Map<string, FormatEntry> | null;
 }
 
 export type IntegrateResult = "applied" | "duplicate" | "buffered" | "noop";
@@ -69,6 +77,19 @@ export interface SnapshotChar {
    * delete/revive outranks, so resolution stays correct.
    */
   readonly visId?: string;
+  /**
+   * Encoded per-attribute LWW formatting state, added in snapshot v3. Optional so a v1/v2
+   * snapshot (no format ops ever existed then) still loads — chars simply default to no
+   * formatting, which any later format op naturally outranks.
+   */
+  readonly formats?: SnapshotFormatEntry[];
+}
+
+export interface SnapshotFormatEntry {
+  readonly key: string;
+  readonly value: string | boolean | null;
+  /** Encoded LWW stamp (`FormatEntry.stamp`). */
+  readonly stampId: string;
 }
 
 export interface DocumentSnapshot {
@@ -79,8 +100,8 @@ export interface DocumentSnapshot {
   readonly chars: SnapshotChar[];
 }
 
-/** v2 adds per-char LWW visibility stamps (`SnapshotChar.visId`) for revive/delete. */
-export const SNAPSHOT_VERSION = 2;
+/** v3 adds per-char, per-attribute LWW formatting state (`SnapshotChar.formats`). */
+export const SNAPSHOT_VERSION = 3;
 
 export interface DocumentIdentity {
   /** Per-tab replica id used to mint new char ids. */
@@ -100,6 +121,7 @@ export class RGADocument {
   private readonly pendingInserts = new Map<string, InsertOp[]>();
   private readonly pendingDeletes = new Map<string, DeleteOp[]>();
   private readonly pendingRevives = new Map<string, ReviveOp[]>();
+  private readonly pendingFormats = new Map<string, FormatOp[]>();
   private visibleCount = 0;
 
   constructor(identity: DocumentIdentity) {
@@ -107,7 +129,9 @@ export class RGADocument {
     this.authorId = identity.authorId;
     this.clock = new LamportClock();
 
-    // ROOT head sentinel: never visible, never deleted-countable, always present.
+    // ROOT head sentinel: never visible, never deleted-countable, always present. It IS a
+    // valid format-op target — block 0 (no preceding block-boundary char) anchors its
+    // block-level attributes here.
     this.head = {
       id: ROOT,
       char: "",
@@ -118,6 +142,7 @@ export class RGADocument {
       afterId: ROOT,
       prev: null,
       next: null,
+      formats: null,
     };
     this.tail = this.head;
     this.byId.set(encodeId(ROOT), this.head);
@@ -174,6 +199,7 @@ export class RGADocument {
       afterId: op.afterId,
       prev: pos,
       next: pos.next,
+      formats: null,
     };
     if (pos.next !== null) {
       pos.next.prev = node;
@@ -239,6 +265,37 @@ export class RGADocument {
     return "applied";
   }
 
+  /**
+   * Integrate a format-attribute set/clear as an LWW register on `(charId, key)`: it wins
+   * only if its `(clock, replicaId)` stamp outranks the current stamp for that key,
+   * otherwise it's a stale/duplicate no-op. Idempotent + commutative like delete/revive.
+   * A target char that's tombstoned can still carry formatting (its visibility and its
+   * attributes are independent registers) — buffered if the target hasn't arrived yet, same
+   * as delete/revive, so a format op can safely arrive before its target's insert.
+   */
+  integrateFormat(op: FormatOp): IntegrateResult {
+    const key = encodeId(op.charId);
+    const node = this.byId.get(key);
+    if (!node) {
+      this.buffer(this.pendingFormats, key, op);
+      return "buffered";
+    }
+    const stamp: CharId = { clock: op.clock, replicaId: op.replicaId };
+    const formats = node.formats ?? (node.formats = new Map());
+    const existing = formats.get(op.key);
+    if (existing && compareId(stamp, existing.stamp) <= 0) return "duplicate";
+
+    formats.set(op.key, { value: op.value, stamp });
+    return "applied";
+  }
+
+  /** Current value of format attribute `key` on char `id`, or `null` if never set. */
+  getFormat(id: CharId, key: string): string | boolean | null {
+    const node = this.byId.get(encodeId(id));
+    const entry = node?.formats?.get(key);
+    return entry ? entry.value : null;
+  }
+
   /** Materialize the visible text, skipping tombstones. O(n). */
   text(): string {
     let out = "";
@@ -278,6 +335,22 @@ export class RGADocument {
   /** Serialize to a JSONB-ready snapshot: chars in document order, tombstones included. O(n). */
   toSnapshot(): DocumentSnapshot {
     const chars: SnapshotChar[] = [];
+    // ROOT is never walked (the loop starts at head.next), but it can carry block-0
+    // formatting — represented as a synthetic leading chars[] entry so fromSnapshot can
+    // restore it onto the rebuilt head sentinel without a special-cased wire shape.
+    const rootFormats = this.encodeFormats(this.head);
+    if (rootFormats) {
+      chars.push({
+        id: encodeId(ROOT),
+        char: "",
+        deleted: true,
+        authorId: "ROOT",
+        timestamp: 0,
+        after: encodeId(ROOT),
+        visId: encodeId(ROOT),
+        formats: rootFormats,
+      });
+    }
     for (let cur = this.head.next; cur !== null; cur = cur.next) {
       chars.push({
         id: encodeId(cur.id),
@@ -287,9 +360,19 @@ export class RGADocument {
         timestamp: cur.timestamp,
         after: encodeId(cur.afterId),
         visId: encodeId(cur.visStamp),
+        formats: this.encodeFormats(cur) ?? undefined,
       });
     }
     return { v: SNAPSHOT_VERSION, clock: this.clock.peek(), chars };
+  }
+
+  private encodeFormats(node: Node): SnapshotFormatEntry[] | null {
+    if (!node.formats || node.formats.size === 0) return null;
+    const out: SnapshotFormatEntry[] = [];
+    for (const [key, entry] of node.formats) {
+      out.push({ key, value: entry.value, stampId: encodeId(entry.stamp) });
+    }
+    return out;
   }
 
   /**
@@ -301,6 +384,12 @@ export class RGADocument {
   static fromSnapshot(snapshot: DocumentSnapshot, identity: DocumentIdentity): RGADocument {
     const doc = new RGADocument(identity);
     for (const entry of snapshot.chars) {
+      // ROOT never gets its own linked-list node (the constructor already made `doc.head`) —
+      // a v3 snapshot may carry a synthetic ROOT entry solely to transport block-0 formatting.
+      if (isRoot(decodeId(entry.id))) {
+        doc.applyFormats(doc.head, entry.formats);
+        continue;
+      }
       const node: Node = {
         id: decodeId(entry.id),
         char: entry.char,
@@ -312,7 +401,9 @@ export class RGADocument {
         afterId: decodeId(entry.after),
         prev: doc.tail,
         next: null,
+        formats: null,
       };
+      doc.applyFormats(node, entry.formats);
       doc.tail.next = node;
       doc.tail = node;
       doc.byId.set(entry.id, node);
@@ -320,6 +411,12 @@ export class RGADocument {
     }
     doc.clock.restore(snapshot.clock);
     return doc;
+  }
+
+  private applyFormats(node: Node, formats: SnapshotFormatEntry[] | undefined): void {
+    if (!formats || formats.length === 0) return;
+    const map = node.formats ?? (node.formats = new Map());
+    for (const f of formats) map.set(f.key, { value: f.value, stamp: decodeId(f.stampId) });
   }
 
   private buffer<T>(store: Map<string, T[]>, key: string, op: T): void {
@@ -330,8 +427,8 @@ export class RGADocument {
 
   /**
    * A node with `key` was just integrated. Retry any inserts that were waiting
-   * on it as their anchor, and any deletes/revives that were waiting on it as their
-   * target. Retried inserts may in turn unblock further ops, so this cascades.
+   * on it as their anchor, and any deletes/revives/formats that were waiting on it as
+   * their target. Retried inserts may in turn unblock further ops, so this cascades.
    */
   private flushPending(key: string): void {
     const waitingInserts = this.pendingInserts.get(key);
@@ -348,6 +445,11 @@ export class RGADocument {
     if (waitingRevives) {
       this.pendingRevives.delete(key);
       for (const op of waitingRevives) this.integrateRevive(op);
+    }
+    const waitingFormats = this.pendingFormats.get(key);
+    if (waitingFormats) {
+      this.pendingFormats.delete(key);
+      for (const op of waitingFormats) this.integrateFormat(op);
     }
   }
 }

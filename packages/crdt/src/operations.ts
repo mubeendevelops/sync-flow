@@ -75,7 +75,34 @@ export interface ReviveOp {
   readonly opVersion: number;
 }
 
-export type Op = InsertOp | DeleteOp | ReviveOp;
+/**
+ * Set (or clear) one formatting attribute on a char — an inline mark (e.g. `"bold"`) or a
+ * block-level attribute (e.g. `"blockType"`) anchored to a block-boundary char. See
+ * `apps/web/src/lib/crdt-bridge.ts` for how char/block anchors are chosen; the CRDT itself
+ * treats `charId` as an opaque target and doesn't know "inline" from "block-level".
+ *
+ * Same LWW-register design as delete/revive, generalized to a `(charId, key)` keyed store:
+ * a format op wins only if its `(clock, replicaId)` stamp outranks the current stamp for
+ * that key, so concurrent formatting of overlapping ranges converges deterministically
+ * without needing to merge values. `value: null` clears the attribute (distinct from
+ * "never set" only in that it carries its own stamp, so it can outrank a concurrent set).
+ */
+export interface FormatOp {
+  readonly type: "format";
+  /** The char (inline mark) or block-anchor char (block attribute) this op targets. */
+  readonly charId: CharId;
+  /** Attribute name, e.g. `"bold" | "italic" | "code" | "link" | "blockType" | "listType"`. */
+  readonly key: string;
+  /** New value, or `null` to clear. */
+  readonly value: string | boolean | null;
+  /** Setter's Lamport clock (LWW stamp + causality + persistence). */
+  readonly clock: number;
+  /** Setter's replica (LWW tiebreak + persistence). */
+  readonly replicaId: string;
+  readonly opVersion: number;
+}
+
+export type Op = InsertOp | DeleteOp | ReviveOp | FormatOp;
 
 export interface LocalInsertOptions {
   /** Override the wall-clock timestamp (used by tests for determinism). */
@@ -125,6 +152,26 @@ export function localDelete(doc: RGADocument, index: number): DeleteOp {
   return op;
 }
 
+/** Produce and locally apply a format-attribute set/clear on `charId`. */
+export function localFormat(
+  doc: RGADocument,
+  charId: CharId,
+  key: string,
+  value: string | boolean | null,
+): FormatOp {
+  const op: FormatOp = {
+    type: "format",
+    charId,
+    key,
+    value,
+    clock: doc.clock.tick(),
+    replicaId: doc.replicaId,
+    opVersion: OP_VERSION,
+  };
+  doc.integrateFormat(op);
+  return op;
+}
+
 /** Integrate a remote op. Idempotent + commutative; buffers on a missing dependency. */
 export function applyRemote(doc: RGADocument, op: Op): IntegrateResult {
   if (op.type === "insert") {
@@ -135,6 +182,10 @@ export function applyRemote(doc: RGADocument, op: Op): IntegrateResult {
     doc.clock.receive(op.clock);
     return doc.integrateDelete(op);
   }
+  if (op.type === "revive") {
+    doc.clock.receive(op.clock);
+    return doc.integrateRevive(op);
+  }
   doc.clock.receive(op.clock);
-  return doc.integrateRevive(op);
+  return doc.integrateFormat(op);
 }

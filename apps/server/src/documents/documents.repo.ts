@@ -295,7 +295,7 @@ export interface OperationRecord {
   document_id: string;
   user_id: string | null;
   seq: string;
-  op_type: "insert" | "delete" | "revive";
+  op_type: "insert" | "delete" | "revive" | "format";
   char_id: string;
   after_id: string | null;
   value: string | null;
@@ -303,6 +303,7 @@ export interface OperationRecord {
   lamport_clock: string;
   op_version: number;
   created_at: Date;
+  format_key: string | null;
 }
 
 export interface ListOperationsInput {
@@ -319,7 +320,7 @@ export async function listOperations(
 ): Promise<{ operations: OperationRecord[]; hasMore: boolean }> {
   const { rows } = await db.query<OperationRecord>(
     `SELECT id, document_id, user_id, seq, op_type, char_id, after_id, value, replica_id,
-            lamport_clock, op_version, created_at
+            lamport_clock, op_version, created_at, format_key
      FROM document_operations
      WHERE document_id = $1 AND seq > $2
      ORDER BY seq ASC

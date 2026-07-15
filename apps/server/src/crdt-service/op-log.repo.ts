@@ -50,6 +50,7 @@ const INSERT_COLUMNS: (keyof OperationRowValues)[] = [
   "replica_id",
   "lamport_clock",
   "op_version",
+  "format_key",
 ];
 
 /**
@@ -114,7 +115,7 @@ export async function getOperationsAfter(
   afterSeq: number,
 ): Promise<ReplayOp[]> {
   const { rows } = await db.query<OperationRow & { seq: string }>(
-    `SELECT seq, op_type, char_id, after_id, value, replica_id, lamport_clock, op_version,
+    `SELECT seq, op_type, char_id, after_id, value, replica_id, lamport_clock, op_version, format_key,
             user_id, created_at
      FROM document_operations
      WHERE document_id = $1 AND seq > $2
@@ -138,7 +139,7 @@ export async function getOperationsInRange(
   throughSeq: number,
 ): Promise<ReplayOp[]> {
   const { rows } = await db.query<OperationRow & { seq: string }>(
-    `SELECT seq, op_type, char_id, after_id, value, replica_id, lamport_clock, op_version,
+    `SELECT seq, op_type, char_id, after_id, value, replica_id, lamport_clock, op_version, format_key,
             user_id, created_at
      FROM document_operations
      WHERE document_id = $1 AND seq > $2 AND seq <= $3

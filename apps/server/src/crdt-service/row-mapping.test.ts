@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { encodeId, OP_VERSION, type DeleteOp, type InsertOp, type ReviveOp } from "@sync-flow/crdt";
+import {
+  encodeId,
+  OP_VERSION,
+  type DeleteOp,
+  type InsertOp,
+  type ReviveOp,
+  type FormatOp,
+} from "@sync-flow/crdt";
 import { opToRowValues, rowToOp, type OperationRow } from "./row-mapping.js";
 
 const insertOp: InsertOp = {
@@ -24,6 +31,26 @@ const reviveOp: ReviveOp = {
   type: "revive",
   charId: { clock: 2, replicaId: "r1" },
   clock: 4,
+  replicaId: "r2",
+  opVersion: OP_VERSION,
+};
+
+const boldFormatOp: FormatOp = {
+  type: "format",
+  charId: { clock: 2, replicaId: "r1" },
+  key: "bold",
+  value: true,
+  clock: 5,
+  replicaId: "r2",
+  opVersion: OP_VERSION,
+};
+
+const linkFormatOp: FormatOp = {
+  type: "format",
+  charId: { clock: 2, replicaId: "r1" },
+  key: "link",
+  value: "https://example.com",
+  clock: 6,
   replicaId: "r2",
   opVersion: OP_VERSION,
 };
@@ -67,6 +94,34 @@ describe("opToRowValues", () => {
       user_id: null,
     });
   });
+
+  it("maps a boolean format op, serializing `true` to text and carrying format_key", () => {
+    const row = opToRowValues("doc-1", { op: boldFormatOp, userId: "user-2" });
+    expect(row).toMatchObject({
+      op_type: "format",
+      char_id: encodeId(boldFormatOp.charId),
+      after_id: null,
+      value: "true",
+      format_key: "bold",
+      replica_id: "r2",
+      lamport_clock: 5,
+    });
+  });
+
+  it("maps a string-valued format op (link) verbatim", () => {
+    const row = opToRowValues("doc-1", { op: linkFormatOp, userId: "user-2" });
+    expect(row).toMatchObject({
+      op_type: "format",
+      value: "https://example.com",
+      format_key: "link",
+    });
+  });
+
+  it("maps a cleared format op (value null) to a null column", () => {
+    const cleared: FormatOp = { ...boldFormatOp, value: null };
+    const row = opToRowValues("doc-1", { op: cleared, userId: "user-2" });
+    expect(row).toMatchObject({ value: null, format_key: "bold" });
+  });
 });
 
 describe("rowToOp", () => {
@@ -76,6 +131,7 @@ describe("rowToOp", () => {
     op_version: OP_VERSION,
     user_id: "user-1",
     created_at: new Date(1000),
+    format_key: null,
   };
 
   it("decodes an insert row back into an InsertOp", () => {
@@ -132,5 +188,58 @@ describe("rowToOp", () => {
       value: null,
     };
     expect(rowToOp(row)).toMatchObject({ type: "revive", clock: 5, replicaId: "r2" });
+  });
+
+  it("decodes a boolean format row (bold) back to value `true`, not the string \"true\"", () => {
+    const row: OperationRow = {
+      ...baseRow,
+      op_type: "format",
+      char_id: encodeId(boldFormatOp.charId),
+      after_id: null,
+      value: "true",
+      format_key: "bold",
+    };
+    const op = rowToOp(row);
+    expect(op).toMatchObject({ type: "format", key: "bold", value: true, clock: 5 });
+  });
+
+  it("decodes a cleared boolean format row (value NULL) back to null", () => {
+    const row: OperationRow = {
+      ...baseRow,
+      op_type: "format",
+      char_id: encodeId(boldFormatOp.charId),
+      after_id: null,
+      value: null,
+      format_key: "bold",
+    };
+    expect(rowToOp(row)).toMatchObject({ type: "format", key: "bold", value: null });
+  });
+
+  it("decodes a string-valued format row (link) verbatim, not coerced to boolean", () => {
+    const row: OperationRow = {
+      ...baseRow,
+      op_type: "format",
+      char_id: encodeId(linkFormatOp.charId),
+      after_id: null,
+      value: "https://example.com",
+      format_key: "link",
+    };
+    expect(rowToOp(row)).toMatchObject({
+      type: "format",
+      key: "link",
+      value: "https://example.com",
+    });
+  });
+
+  it("throws on a corrupt format row missing format_key", () => {
+    const row: OperationRow = {
+      ...baseRow,
+      op_type: "format",
+      char_id: encodeId(boldFormatOp.charId),
+      after_id: null,
+      value: "true",
+      format_key: null,
+    };
+    expect(() => rowToOp(row)).toThrow(/corrupt format row/);
   });
 });

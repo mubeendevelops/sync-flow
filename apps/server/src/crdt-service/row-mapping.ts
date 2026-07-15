@@ -15,11 +15,23 @@ import {
   type InsertOp,
   type DeleteOp,
   type ReviveOp,
+  type FormatOp,
   encodeId,
   decodeId,
 } from "@sync-flow/crdt";
 
-type OpType = "insert" | "delete" | "revive";
+type OpType = "insert" | "delete" | "revive" | "format";
+
+/**
+ * Format keys whose value is always boolean (present) or `null` (cleared) — never a string.
+ * Needed to deserialize `document_operations.value` back to the right JS type, since Postgres
+ * only stores TEXT: `"true"` unambiguously means boolean `true` for these keys, whereas for a
+ * string-valued key (e.g. `link`, whose href could coincidentally be the text "true") the raw
+ * text is always the value verbatim. Must be kept in sync with the bridge's `MARK_KEYS`/
+ * block-attribute keys (`apps/web/src/lib/crdt-bridge.ts`) — this is the ONLY server-side
+ * place that needs to know the distinction, everywhere else a `FormatOp.value` is opaque.
+ */
+const BOOLEAN_FORMAT_KEYS = new Set(["bold", "italic", "code"]);
 
 /** An op plus the authenticated user who produced it (server session context). */
 export interface PendingOp {
@@ -39,6 +51,8 @@ export interface OperationRowValues {
   readonly replica_id: string;
   readonly lamport_clock: number;
   readonly op_version: number;
+  /** Format attribute name; only present for `op_type = 'format'`. */
+  readonly format_key: string | null;
 }
 
 /** A persisted row as read back for replay (subset of `document_operations`). */
@@ -52,6 +66,20 @@ export interface OperationRow {
   readonly op_version: number;
   readonly user_id: string | null;
   readonly created_at: Date;
+  readonly format_key: string | null;
+}
+
+/** Serialize a `FormatOp.value` to the row's TEXT `value` column. */
+function encodeFormatValue(value: string | boolean | null): string | null {
+  if (value === null) return null;
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return value; // string value verbatim
+}
+
+/** Inverse of {@link encodeFormatValue}, using `format_key` to disambiguate boolean vs string. */
+function decodeFormatValue(key: string, raw: string | null): string | boolean | null {
+  if (raw === null) return null;
+  return BOOLEAN_FORMAT_KEYS.has(key) ? raw === "true" : raw;
 }
 
 /** CRDT op → row values for INSERT. */
@@ -69,6 +97,21 @@ export function opToRowValues(documentId: string, pending: PendingOp): Operation
       replica_id: op.charId.replicaId,
       lamport_clock: op.charId.clock,
       op_version: op.opVersion,
+      format_key: null,
+    };
+  }
+  if (op.type === "format") {
+    return {
+      document_id: documentId,
+      user_id: userId,
+      op_type: "format",
+      char_id: encodeId(op.charId),
+      after_id: null,
+      value: encodeFormatValue(op.value),
+      replica_id: op.replicaId,
+      lamport_clock: op.clock,
+      op_version: op.opVersion,
+      format_key: op.key,
     };
   }
   // delete + revive share a shape: they target an existing char and carry the actor's
@@ -83,6 +126,7 @@ export function opToRowValues(documentId: string, pending: PendingOp): Operation
     replica_id: op.replicaId,
     lamport_clock: op.clock,
     op_version: op.opVersion,
+    format_key: null,
   };
 }
 
@@ -100,6 +144,21 @@ export function rowToOp(row: OperationRow): Op {
       // authorId is CRDT metadata only; user_id may be NULL after a user hard-delete.
       authorId: row.user_id ?? "",
       timestamp: row.created_at.getTime(),
+      opVersion: row.op_version,
+    };
+    return op;
+  }
+  if (row.op_type === "format") {
+    if (row.format_key === null) {
+      throw new Error("corrupt format row: missing format_key");
+    }
+    const op: FormatOp = {
+      type: "format",
+      charId: decodeId(row.char_id),
+      key: row.format_key,
+      value: decodeFormatValue(row.format_key, row.value),
+      clock: Number(row.lamport_clock),
+      replicaId: row.replica_id,
       opVersion: row.op_version,
     };
     return op;

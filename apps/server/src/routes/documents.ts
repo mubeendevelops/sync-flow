@@ -134,6 +134,7 @@ function toOperationDto(op: OperationRecord) {
     opVersion: op.op_version,
     userId: op.user_id,
     createdAt: op.created_at,
+    formatKey: op.format_key,
   };
 }
 

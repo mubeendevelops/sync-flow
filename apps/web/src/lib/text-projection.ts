@@ -22,12 +22,24 @@
  * synced; hard breaks are treated like marks — local-only. Documented in PLAN.md.
  */
 
-import type { Node as PMNode } from "@tiptap/pm/model";
+import type { Mark, Node as PMNode } from "@tiptap/pm/model";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { TextSelection } from "@tiptap/pm/state";
 
 /** Block boundary in the flat projection — one code unit, mirrored by `doc.text()`'s `"\n"`. */
 export const BLOCK_SEPARATOR = "\n";
+
+/**
+ * Inline mark keys the CRDT format layer tracks, matched 1:1 to the TipTap mark type names
+ * registered in `useDocumentEditor` (Bold/Italic/Code/Link). Kept as an explicit list — same
+ * idiom as `toolbar-items.ts`'s `MARK_ITEMS`/`BLOCK_ITEMS` — rather than reflected from the
+ * schema, so adding a new mark is a deliberate one-line change here, not silent.
+ */
+export const MARK_KEYS = ["bold", "italic", "code", "link"] as const;
+export type MarkKey = (typeof MARK_KEYS)[number];
+
+/** Block-level node types the CRDT format layer round-trips through `blockType`. */
+export type BlockTypeName = "paragraph" | "heading1" | "heading2" | "heading3" | "codeBlock";
 
 interface Block {
   /** PM position of the first inline position inside the block (i.e. `nodePos + 1`). */
@@ -35,6 +47,32 @@ interface Block {
   /** Length of the block's text, in code units (== `pmEnd - pmStart` for a pure-text block). */
   readonly len: number;
   readonly text: string;
+}
+
+export interface BlockInfo extends Block {
+  readonly blockType: BlockTypeName;
+  readonly listType: "bulletList" | "orderedList" | null;
+}
+
+function blockTypeOf(node: PMNode): BlockTypeName {
+  if (node.type.name === "heading") {
+    const level = node.attrs.level;
+    if (level === 2) return "heading2";
+    if (level === 3) return "heading3";
+    return "heading1";
+  }
+  if (node.type.name === "codeBlock") return "codeBlock";
+  return "paragraph";
+}
+
+/** Nearest ancestor list wrapper of the node at `pos`, or `null` if it isn't inside one. */
+function listTypeAt(doc: PMNode, pos: number): "bulletList" | "orderedList" | null {
+  const $pos = doc.resolve(pos);
+  for (let d = $pos.depth; d > 0; d -= 1) {
+    const name = $pos.node(d).type.name;
+    if (name === "bulletList" || name === "orderedList") return name;
+  }
+  return null;
 }
 
 /** Enumerate the document's textblocks in document order. A textblock never nests, so we don't descend into one. */
@@ -48,6 +86,74 @@ function collectBlocks(doc: PMNode): Block[] {
     return true;
   });
   return blocks;
+}
+
+/** Like {@link collectBlocks}, plus each block's node type and list nesting. */
+export function collectBlockInfos(doc: PMNode): BlockInfo[] {
+  const blocks: BlockInfo[] = [];
+  doc.descendants((node, pos) => {
+    if (node.isTextblock) {
+      blocks.push({
+        pmStart: pos + 1,
+        len: node.content.size,
+        text: node.textContent,
+        blockType: blockTypeOf(node),
+        listType: listTypeAt(doc, pos),
+      });
+      return false;
+    }
+    return true;
+  });
+  return blocks;
+}
+
+/** One projected character: its value plus the marks active on it (empty for a block separator). */
+export interface ProjectedChar {
+  readonly char: string;
+  readonly marks: Partial<Record<MarkKey, string | boolean>>;
+}
+
+/** A mark's format-op value: the href for `link`, `true` for every other (boolean) mark. */
+function markValue(mark: Mark): string | boolean {
+  if (mark.type.name === "link") {
+    const href = mark.attrs.href;
+    return typeof href === "string" ? href : true;
+  }
+  return true;
+}
+
+function marksOf(marks: readonly Mark[]): Partial<Record<MarkKey, string | boolean>> {
+  const out: Partial<Record<MarkKey, string | boolean>> = {};
+  for (const m of marks) {
+    if ((MARK_KEYS as readonly string[]).includes(m.type.name)) {
+      out[m.type.name as MarkKey] = markValue(m);
+    }
+  }
+  return out;
+}
+
+/**
+ * The flat per-code-unit projection of the doc, mirroring {@link docToText} exactly (same
+ * length, same characters, `"\n"` at each block boundary) but also carrying each real char's
+ * active marks. This is what the CRDT bridge diffs against stored `FormatOp` state to mint or
+ * reconcile formatting — see `crdt-bridge.ts`.
+ */
+export function collectProjectedChars(doc: PMNode): ProjectedChar[] {
+  const out: ProjectedChar[] = [];
+  const blocks = collectBlocks(doc);
+  for (let bi = 0; bi < blocks.length; bi++) {
+    const b = blocks[bi]!;
+    doc.nodesBetween(b.pmStart, b.pmStart + b.len, (node) => {
+      if (node.isText && node.text) {
+        const marks = marksOf(node.marks);
+        // Code-unit granularity (not code points) to match `docToText`/`diffText`.
+        for (let i = 0; i < node.text.length; i++) out.push({ char: node.text[i]!, marks });
+      }
+      return true;
+    });
+    if (bi < blocks.length - 1) out.push({ char: BLOCK_SEPARATOR, marks: {} });
+  }
+  return out;
 }
 
 /** The flat plaintext projection of a ProseMirror doc — the exact string the CRDT mirrors. */

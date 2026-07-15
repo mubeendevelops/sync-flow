@@ -20,6 +20,7 @@ export {
   type DocumentIdentity,
   type DocumentSnapshot,
   type SnapshotChar,
+  type SnapshotFormatEntry,
   type VisibleChar,
   type IntegrateResult,
   SNAPSHOT_VERSION,
@@ -30,10 +31,12 @@ export {
   type InsertOp,
   type DeleteOp,
   type ReviveOp,
+  type FormatOp,
   type LocalInsertOptions,
   OP_VERSION,
   localInsert,
   localDelete,
+  localFormat,
   applyRemote,
 } from "./operations.js";
 
