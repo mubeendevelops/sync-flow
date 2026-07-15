@@ -350,6 +350,12 @@ export function createCrdtBridge(options: CrdtBridgeOptions): CrdtBridge {
 
   function onLocalChange(): void {
     if (applying) return;
+    // A read-only editor (viewer) NEVER authors ops. This is the bridge's own guard,
+    // independent of the UI: even a stray programmatic change to a viewer's editor can't
+    // mint or broadcast an op. Remote ops still apply — `applyRemoteOps` doesn't go through
+    // here — so a viewer keeps seeing others' edits live. (The server rejects a viewer's
+    // ops regardless; this just makes sure the client never even tries.)
+    if (!editor.isEditable) return;
     const newText = docToText(editor.state.doc);
     const diff = diffText(lastText, newText);
 
@@ -398,6 +404,9 @@ export function createCrdtBridge(options: CrdtBridgeOptions): CrdtBridge {
 
   function onLocalSelectionChange(): void {
     if (applying) return;
+    // A read-only viewer broadcasts no cursor/selection presence either — the bridge sends
+    // NOTHING when the editor isn't editable (see `onLocalChange`).
+    if (!editor.isEditable) return;
     if (!hasRaf) {
       // SSR / non-browser fallback: send immediately (no paint cycle to sync to).
       const { anchorId, headId } = getCursorIds();

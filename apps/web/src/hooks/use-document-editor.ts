@@ -78,6 +78,12 @@ export function useDocumentEditor(options: UseDocumentEditorOptions): UseDocumen
 
   const editor = useEditor({
     immediatelyRender: false,
+    // Fail-safe default: the editor mounts READ-ONLY and is only switched to editable once the
+    // caller has confirmed this user's role can edit (the page's `setEditable(canEdit)` effect).
+    // This closes the window where a viewer could type in the instant between the editor
+    // mounting and their role resolving. The server is the real enforcement point regardless
+    // (a viewer's `edit` is rejected there); this is defense-in-depth on the client.
+    editable: false,
     extensions: [
       Document,
       Paragraph,
@@ -100,7 +106,9 @@ export function useDocumentEditor(options: UseDocumentEditorOptions): UseDocumen
         "aria-label": "Document content",
       },
       // Undo/redo are collaborative WS events, not local history.
-      handleKeyDown: (_view, event) => {
+      handleKeyDown: (view, event) => {
+        // A read-only (viewer) editor emits no editing events at all — Ctrl+Z/Y do nothing.
+        if (!view.editable) return false;
         const mod = event.metaKey || event.ctrlKey;
         if (!mod) return false;
         const key = event.key.toLowerCase();

@@ -159,15 +159,21 @@ export function DocumentHeader({
 
         {title === null ? (
           <Skeleton className="h-6 w-48" />
-        ) : (
+        ) : canEditTitle ? (
           <h1
             ref={titleRef}
-            contentEditable={canEditTitle}
+            contentEditable
             suppressContentEditableWarning
             onBlur={handleTitleBlur}
             onKeyDown={handleTitleKeyDown}
             className="min-w-0 flex-1 truncate rounded px-1 text-lg font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
+            {title}
+          </h1>
+        ) : (
+          // Viewer: the title is plain, non-editable text — no contentEditable, no edit
+          // affordance (no focus ring, no hover box), just the document name.
+          <h1 className="min-w-0 flex-1 truncate px-1 text-lg font-semibold text-foreground">
             {title}
           </h1>
         )}

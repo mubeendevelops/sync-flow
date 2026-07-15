@@ -131,6 +131,59 @@ describe("crdt bridge remote-op resilience", () => {
   });
 });
 
+describe("crdt bridge read-only (viewer) enforcement", () => {
+  /** A peer whose outbound ops AND cursor sends are both observable. */
+  function makeSpyPeer(replicaId: string) {
+    const editor = new Editor({ extensions: [Document, Paragraph, Text] });
+    const doc = new RGADocument({ replicaId, authorId: replicaId });
+    const sentOps: Op[] = [];
+    let cursorSends = 0;
+    const bridge = createCrdtBridge({
+      editor,
+      doc,
+      replicaId,
+      sendOps: (ops) => sentOps.push(...ops),
+      sendCursor: () => {
+        cursorSends += 1;
+      },
+    });
+    bridge.syncEditorFromDoc();
+    return { editor, doc, bridge, sentOps, cursorSends: () => cursorSends };
+  }
+
+  it("mints/sends NO ops or cursor from a read-only editor even if its content diverges", () => {
+    const viewer = makeSpyPeer("viewer");
+    viewer.editor.setEditable(false);
+    expect(viewer.editor.isEditable).toBe(false);
+
+    // Force a local content change (commands bypass editability, standing in for any stray
+    // local mutation). The guard must still mint + send nothing.
+    viewer.editor.commands.insertContent("should not sync");
+    viewer.bridge.onLocalChange();
+    expect(viewer.sentOps).toHaveLength(0);
+
+    viewer.bridge.onLocalSelectionChange();
+    expect(viewer.cursorSends()).toBe(0);
+  });
+
+  it("still applies + renders remote ops on a read-only editor (a viewer sees live edits)", () => {
+    const viewer = makeSpyPeer("viewer");
+    viewer.editor.setEditable(false);
+
+    const author = makePeer("author");
+    author.editor.commands.insertContent("Hello");
+    author.bridge.onLocalChange();
+
+    viewer.bridge.applyRemoteOps(author.sent);
+
+    expect(viewer.doc.text()).toBe("Hello");
+    expect(docToText(viewer.editor.state.doc)).toBe("Hello");
+    // Applying remote ops must never cause the viewer to echo anything back out.
+    expect(viewer.sentOps).toHaveLength(0);
+    expect(viewer.cursorSends()).toBe(0);
+  });
+});
+
 describe("crdt bridge echo-loop prevention", () => {
   it("ignores ops stamped with our own replica id", () => {
     const a = makePeer("A");

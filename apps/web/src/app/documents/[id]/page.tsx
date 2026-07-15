@@ -16,6 +16,7 @@ import { useDocumentDetail } from "@/hooks/use-document-sharing";
 import { usePatchDocument } from "@/hooks/use-documents";
 import { useRequireAuth } from "@/hooks/use-auth";
 import { useKeyboardSafeCaret } from "@/hooks/use-keyboard-safe-caret";
+import { cn } from "@/lib/utils";
 
 export default function DocumentEditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -38,7 +39,10 @@ export default function DocumentEditorPage() {
       : data.document.ownerId === user.id
         ? "owner"
         : (data.members.find((m) => m.userId === user.id)?.role ?? "viewer");
-  const canEdit = role !== "viewer";
+  // Fail-safe: only an explicitly-confirmed owner/editor can edit. While `role` is still null
+  // (document detail loading), this is false — a not-yet-known user is treated as read-only,
+  // never editable. (`role !== "viewer"` would wrongly be true for null during that window.)
+  const canEdit = role === "owner" || role === "editor";
 
   useEffect(() => {
     editor?.setEditable(canEdit);
@@ -86,9 +90,15 @@ export default function DocumentEditorPage() {
         isOwner={role === "owner"}
         onTitleCommit={(title) => patchDocument.mutate({ title })}
       />
-      <FixedToolbar editor={editor} />
-      <FloatingToolbar editor={editor} />
-      <MobileFormatSheet editor={editor} />
+      {/* Editing UI is entirely ABSENT for viewers — no disabled buttons, no tooltips, just
+          gone. A viewer sees a clean read-only document with zero editing affordances. */}
+      {canEdit && (
+        <>
+          <FixedToolbar editor={editor} />
+          <FloatingToolbar editor={editor} />
+          <MobileFormatSheet editor={editor} />
+        </>
+      )}
 
       <main className="flex-1">
         <div className="mx-auto max-w-3xl px-4 pb-24 pt-8 sm:px-8 sm:pt-16">
@@ -100,7 +110,11 @@ export default function DocumentEditorPage() {
               <Skeleton className="h-5 w-4/5" />
             </div>
           ) : (
-            <EditorContent editor={editor} />
+            // Viewers: `select-none` suppresses the text cursor/selection affordance on the
+            // read-only editor container, so there's no caret or highlight inviting an edit.
+            <div className={cn(!canEdit && "select-none")}>
+              <EditorContent editor={editor} />
+            </div>
           )}
         </div>
       </main>

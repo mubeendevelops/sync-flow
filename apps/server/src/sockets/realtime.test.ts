@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
 import pino from "pino";
 import type pg from "pg";
-import { RGADocument, localInsert, applyRemote, type Op } from "@sync-flow/crdt";
+import { RGADocument, localInsert, localFormat, applyRemote, type Op } from "@sync-flow/crdt";
 import { setupTestDb, truncateAll } from "../test/test-db.js";
 import { signAccessToken } from "../auth/tokens.js";
 import { ACCESS_TOKEN_COOKIE } from "../auth/cookies.js";
@@ -212,6 +212,45 @@ describe("real-time socket layer", () => {
     await sleep(FLUSH_MS);
     expect(ownerGotOp).toBe(false);
     expect(await opCount(documentId)).toBe(0);
+  });
+
+  it("rejects (and never persists/broadcasts) a viewer's FORMAT op, not just insert/delete", async () => {
+    // The role gate is per-`edit`-event, so it covers every op type the event carries —
+    // format/mark ops included. This proves a viewer can't sneak a formatting change past a
+    // read-only-only-on-the-client editor by emitting a format op directly on the socket.
+    const { ownerId, documentId } = await seedOwnerDoc();
+    const viewerId = await addCollaborator(documentId, "viewer");
+
+    const owner = await connect(ownerId);
+    const viewer = await connect(viewerId);
+
+    // Owner types a char so there's a real, known char id for the viewer to try to format.
+    await emit(owner, "join", { documentId });
+    const { ops: seedOps, doc: ownerDoc } = typeOps("X", ownerId);
+    await emit(owner, "edit", { ops: seedOps });
+    await sleep(FLUSH_MS);
+
+    const viewerJoin = await emit<{ role: string; snapshot: unknown }>(viewer, "join", {
+      documentId,
+    });
+    expect(viewerJoin.ok).toBe(true);
+
+    let ownerGotOp = false;
+    owner.on("operation", () => (ownerGotOp = true));
+
+    // A format op targeting the char the owner just inserted (bold it).
+    const targetId = ownerDoc.visibleChars()[0]!.id;
+    const viewerDoc = new RGADocument({ replicaId: randomUUID(), authorId: viewerId });
+    const formatOp = localFormat(viewerDoc, targetId, "bold", true);
+
+    const res = await emit(viewer, "edit", { ops: [formatOp] });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe(403);
+
+    await sleep(FLUSH_MS);
+    expect(ownerGotOp).toBe(false);
+    // Only the owner's single insert is durable — the viewer's format never persisted.
+    expect(await opCount(documentId)).toBe(1);
   });
 
   // ---- round-trip + convergence ------------------------------------------
