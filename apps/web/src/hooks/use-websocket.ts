@@ -156,13 +156,21 @@ export function useWebSocket(
       void (async () => {
         try {
           const result = await socket.join(documentId);
-          noteSeq(result.seq);
           const isReconnect = hasJoinedRef.current;
           hasJoinedRef.current = true;
           handlersRef.current.onJoined(result, isReconnect);
           if (isReconnect) {
+            // Deliberately do NOT `noteSeq(result.seq)` here first: the join ack's `seq` is
+            // already the server's CURRENT watermark (reflecting every op persisted while we
+            // were disconnected, including other clients' edits), so folding it into
+            // `lastSeqRef` before syncing would make `requestSync`'s gap look like 0 and skip
+            // fetching the tail we actually missed. `requestSync` reads `lastSeqRef.current` —
+            // still our PRE-reconnect watermark here — and advances it itself once the tail
+            // has actually been applied.
             await requestSync();
             flushOutbound();
+          } else {
+            noteSeq(result.seq);
           }
         } catch {
           // A failed join (e.g. transient auth refresh mid-upgrade) is retried on the

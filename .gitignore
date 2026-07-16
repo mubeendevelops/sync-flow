@@ -21,6 +21,7 @@ dist/
 .env.local
 .env.development.local
 .env.test.local
+.env.production
 .env.production.local
 
 # Vercel
@@ -48,3 +49,6 @@ next-env.d.ts
 
 # Testing
 coverage/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+tests/e2e/.cache/

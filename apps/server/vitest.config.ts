@@ -17,7 +17,9 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/test/**", "src/server.ts", "src/seed.ts"],
-      reporter: ["text", "json-summary"],
+      // "lcov" added for CI: Codecov (and most coverage-badge tooling) consumes lcov.info, not
+      // the console "text" output or the compact "json-summary" (used locally for thresholds).
+      reporter: ["text", "json-summary", "lcov"],
       thresholds: {
         lines: 80,
         statements: 80,

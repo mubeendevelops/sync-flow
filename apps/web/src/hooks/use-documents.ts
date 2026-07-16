@@ -84,8 +84,17 @@ export function withDocumentPatched(
 
 /** Optimistic: an in-flight placeholder card appears immediately; on success the caller
  * navigates to the new document (the list itself is invalidated in the background so it's
- * accurate whenever the user comes back to it). On failure, rolls back and toasts. */
-export function useCreateDocument() {
+ * accurate whenever the user comes back to it). On failure, rolls back and toasts.
+ *
+ * `onCreated` (if given) is wired into the mutation's OWN `onSuccess`, not a callback passed
+ * to `.mutate()` — the optimistic update above inserts the placeholder card into the list,
+ * which for the empty-state CTA immediately unmounts the calling component (EmptyState swaps
+ * for the real grid the instant the list goes from 0 to 1 items). React Query drops callbacks
+ * passed to `.mutate(vars, { onSuccess })` if the mutating component unmounts before the
+ * network request resolves, but callbacks baked into `useMutation({ onSuccess })` itself are
+ * bound to the mutation cache entry and always fire — so navigation MUST live here, not in the
+ * caller's `.mutate()` call, or "create from the empty state" silently never navigates. */
+export function useCreateDocument(options?: { onCreated?: (document: Document) => void }) {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
 
@@ -129,8 +138,9 @@ export function useCreateDocument() {
       }
       toast.error("Couldn't create the document. Please try again.");
     },
-    onSuccess: () => {
+    onSuccess: ({ document }) => {
       void queryClient.invalidateQueries({ queryKey: DOCUMENTS_LIST_QUERY_KEY });
+      options?.onCreated?.(document);
     },
   });
 }
@@ -141,14 +151,12 @@ const DEFAULT_DOCUMENT_TITLE = "Untitled document";
  * then navigate to the editor on success. */
 export function useCreateDocumentAndNavigate() {
   const router = useRouter();
-  const createDocument = useCreateDocument();
+  const createDocument = useCreateDocument({
+    onCreated: (document) => router.push(`/documents/${document.id}`),
+  });
 
   return {
-    create: () =>
-      createDocument.mutate(
-        { title: DEFAULT_DOCUMENT_TITLE },
-        { onSuccess: ({ document }) => router.push(`/documents/${document.id}`) },
-      ),
+    create: () => createDocument.mutate({ title: DEFAULT_DOCUMENT_TITLE }),
     isPending: createDocument.isPending,
   };
 }

@@ -18,3 +18,14 @@ redis-cli:
 reset:
 	docker compose down -v
 	docker compose up -d
+
+.PHONY: prod-up prod-down prod-logs
+
+prod-up:
+	docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+
+prod-down:
+	docker compose -f docker-compose.prod.yml --env-file .env.production down
+
+prod-logs:
+	docker compose -f docker-compose.prod.yml --env-file .env.production logs -f

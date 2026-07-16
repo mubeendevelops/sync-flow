@@ -1,0 +1,61 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9.15.9"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # tests/e2e's own playwright.config.ts boots apps/server (tsx) and apps/web
+      # (next build && next start) directly as processes — both import
+      # @sync-flow/crdt/@sync-flow/schemas via their built dist/.
+      - name: Build workspace packages (crdt, schemas)
+        run: |
+          pnpm --filter @sync-flow/crdt build
+          pnpm --filter @sync-flow/schemas build
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('tests/e2e/package.json') }}
+      - name: Install Playwright browsers
+        working-directory: tests/e2e
+        run: pnpm exec playwright install --with-deps chromium
+      # The real stack: tests/e2e/global-setup.ts (run automatically by `pnpm test:e2e` below)
+      # waits for Postgres to be reachable, then provisions + migrates + seeds a dedicated
+      # `syncflow_e2e` database on it — it does not start the server/web processes itself,
+      # Playwright's own `webServer` config does that (see playwright.config.ts).
+      - name: Start Postgres + Redis
+        run: docker compose up -d
+      - name: Run Playwright E2E suite
+        run: pnpm test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/e2e/playwright-report
+          retention-days: 14
+      - name: Stop Postgres + Redis
+        if: always()
+        run: docker compose down -v

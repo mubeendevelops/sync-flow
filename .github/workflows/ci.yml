@@ -1,0 +1,203 @@
+name: CI
+
+# Also runs on push to main (not just PRs) so deploy.yml — triggered by this workflow's
+# completion via `workflow_run` — has a CI run against main's actual HEAD to gate on.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9.15.9"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+
+  typecheck:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # apps/server and apps/web import @sync-flow/crdt and @sync-flow/schemas via their built
+      # dist/ (see each package's "exports" field), not source — tsc can't resolve those
+      # modules' types without this, in every downstream job below too.
+      - name: Build workspace packages (crdt, schemas)
+        run: |
+          pnpm --filter @sync-flow/crdt build
+          pnpm --filter @sync-flow/schemas build
+      - name: Typecheck
+        run: pnpm typecheck
+
+  unit-test:
+    needs: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace packages (crdt, schemas)
+        run: |
+          pnpm --filter @sync-flow/crdt build
+          pnpm --filter @sync-flow/schemas build
+      # packages/crdt and packages/schemas are framework-free with no external state;
+      # apps/web's suite is jsdom + mocks. None of these touch a real DB/Redis — that's
+      # apps/server's suite, covered by integration-test below.
+      - name: Unit tests — packages/crdt
+        run: pnpm --filter @sync-flow/crdt run test:coverage
+      - name: Unit tests — packages/schemas
+        run: pnpm --filter @sync-flow/schemas test
+      - name: Unit tests — apps/web
+        run: pnpm --filter web test
+      - name: Upload crdt coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-crdt
+          path: packages/crdt/coverage
+          retention-days: 14
+      - name: Upload crdt coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: packages/crdt/coverage/lcov.info
+          flags: crdt
+          fail_ci_if_error: false
+
+  integration-test:
+    needs: unit-test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: syncflow
+          POSTGRES_PASSWORD: syncflow_ci_password
+          POSTGRES_DB: syncflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U syncflow -d syncflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://syncflow:syncflow_ci_password@localhost:5432/syncflow
+      REDIS_URL: redis://localhost:6379
+      # apps/server's own test suite provisions and migrates a separate "syncflow_test"
+      # database on the same Postgres server via TEST_DATABASE_URL — independent of the
+      # migrate/seed smoke-check against DATABASE_URL below.
+      TEST_DATABASE_URL: postgresql://syncflow:syncflow_ci_password@localhost:5432/syncflow_test
+      TEST_REDIS_URL: redis://localhost:6379
+      # Throwaway, CI-only values — never touch real data, don't need to be secret.
+      JWT_ACCESS_SECRET: ci_access_secret_not_a_real_secret
+      JWT_REFRESH_SECRET: ci_refresh_secret_not_a_real_secret
+      COOKIE_DOMAIN: localhost
+      CORS_ORIGIN: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace packages (crdt, schemas)
+        run: |
+          pnpm --filter @sync-flow/crdt build
+          pnpm --filter @sync-flow/schemas build
+      # Smoke-checks that migrations and the seed script actually run cleanly against a fresh
+      # database — a real (if separate) signal from what the test suite itself exercises below.
+      - name: Run migrations
+        working-directory: apps/server
+        run: pnpm run migrate:up
+      - name: Seed database
+        working-directory: apps/server
+        run: pnpm run seed
+      - name: Integration tests — apps/server (real Postgres + Redis)
+        run: pnpm --filter server run test:coverage
+      - name: Upload server coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-server
+          path: apps/server/coverage
+          retention-days: 14
+      - name: Upload server coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: apps/server/coverage/lcov.info
+          flags: server
+          fail_ci_if_error: false
+
+  build:
+    needs: integration-test
+    runs-on: ubuntu-latest
+    env:
+      # apps/web's build inlines these NEXT_PUBLIC_* vars at build time — real values only
+      # matter for a deploy (see deploy.yml), not for proving the build itself succeeds.
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NEXT_PUBLIC_WS_URL: ws://localhost:4000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # `pnpm -r` builds in dependency order — crdt/schemas before the apps that import them.
+      - name: Build all workspace packages and apps
+        run: pnpm -r --if-present run build

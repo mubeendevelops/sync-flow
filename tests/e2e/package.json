@@ -1,0 +1,22 @@
+{
+  "name": "@sync-flow/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@sync-flow/crdt": "workspace:*",
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "pg": "^8.13.1",
+    "socket.io-client": "^4.8.3",
+    "typescript": "^5.7.3"
+  }
+}

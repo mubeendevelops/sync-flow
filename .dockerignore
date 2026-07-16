@@ -1,0 +1,28 @@
+**/node_modules
+**/dist
+**/coverage
+**/.next
+**/.turbo
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+
+.git
+.github
+.claude
+.vscode
+.idea
+
+# apps/web and tests/e2e aren't built into this image, but their package.json files
+# are still COPYed (see Dockerfile) so `pnpm install --frozen-lockfile` sees the full
+# workspace member set the lockfile expects. Don't blanket-exclude their directories —
+# Docker can't un-exclude a file whose parent directory was already excluded.
+apps/web/.next
+apps/web/src
+tests/e2e/test-results
+tests/e2e/playwright-report
+tests/e2e/.cache
+
+*.md
+!README.md

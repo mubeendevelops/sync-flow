@@ -1,5 +1,9 @@
 # SyncFlow
 
+[![CI](https://github.com/mubeendevelops/sync-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/mubeendevelops/sync-flow/actions/workflows/ci.yml)
+[![Deploy](https://github.com/mubeendevelops/sync-flow/actions/workflows/deploy.yml/badge.svg)](https://github.com/mubeendevelops/sync-flow/actions/workflows/deploy.yml)
+[![codecov](https://codecov.io/gh/mubeendevelops/sync-flow/branch/main/graph/badge.svg)](https://codecov.io/gh/mubeendevelops/sync-flow)
+
 Real-time collaborative document editor with a hand-rolled RGA CRDT. See `CLAUDE.md` for the
 full architecture and `PLAN.md` for the build plan (both local-only, not committed to git).
 

@@ -11,7 +11,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm -r --if-present run test"
+    "test": "pnpm -r --if-present run test",
+    "test:e2e": "pnpm --filter @sync-flow/e2e test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

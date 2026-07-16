@@ -70,6 +70,9 @@ async function main(): Promise<void> {
       jwtAccessTtlSeconds: parseTtlToSeconds(config.JWT_ACCESS_TTL),
       jwtRefreshTtlSeconds: parseTtlToSeconds(config.JWT_REFRESH_TTL),
       cookieDomain: config.COOKIE_DOMAIN,
+      authRateLimit: config.AUTH_RATE_LIMIT_MAX
+        ? { windowMs: 15 * 60 * 1000, max: config.AUTH_RATE_LIMIT_MAX }
+        : undefined,
     },
     restore: { manager, broadcaster: restoreBroadcaster },
     export: { cache: redis, renderPdf },

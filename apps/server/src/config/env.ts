@@ -16,6 +16,11 @@ const envSchema = z.object({
   CORS_ORIGIN: z.url(),
 
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+
+  // Overrides createAuthRouter's default 20-requests/15min signup+login limiter. Unset in
+  // dev/prod (keeps the security-motivated default); the e2e suite sets this high since it
+  // signs up many users per run against one long-lived server instance.
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;

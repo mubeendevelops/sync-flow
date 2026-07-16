@@ -1,0 +1,74 @@
+name: Deploy
+
+# workflow_run, not `push`, because "after ci passes" needs to gate on CI's actual result —
+# CI (ci.yml) now also runs on push to main (see that file) so there's always a run against
+# main's real HEAD for this to react to.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Deploy exactly the commit CI validated, not whatever main points to right now.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Deploy backend to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          npm install -g @railway/cli
+          railway up --service backend
+
+      - name: Deploy frontend to Vercel
+        working-directory: apps/web
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          npm install -g vercel
+          vercel --prod --token="$VERCEL_TOKEN" --yes
+
+      # Both platforms need a moment to finish rolling out — poll instead of a single
+      # immediately-after-deploy request, which would be flaky.
+      - name: Post-deploy smoke test — backend /ready
+        run: |
+          url="${{ vars.BACKEND_URL }}/ready"
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "OK: $url returned 200"
+              exit 0
+            fi
+            echo "Attempt $i: $url returned $code, retrying in 5s..."
+            sleep 5
+          done
+          echo "FAILED: $url never returned 200" >&2
+          exit 1
+
+      - name: Post-deploy smoke test — frontend
+        run: |
+          url="${{ vars.FRONTEND_URL }}"
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "OK: $url returned 200"
+              exit 0
+            fi
+            echo "Attempt $i: $url returned $code, retrying in 5s..."
+            sleep 5
+          done
+          echo "FAILED: $url never returned 200" >&2
+          exit 1
